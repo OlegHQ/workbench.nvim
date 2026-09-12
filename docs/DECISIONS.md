@@ -40,7 +40,7 @@ Status: accepted. Workspace identity contains an ordered roots array; initial ex
 
 ## ADR-010: Measure Startup And Interaction Separately
 
-Status: accepted. Host startup must satisfy its existing 150 ms target on the reference machine, with >10 ms regression investigation. Workbench also has idle/first-use/streaming/disposal budgets. Performance numbers in VALIDATION are targets until measured. CI checks ratios only under controlled conditions and cannot establish a reference-machine absolute result from a shared runner.
+Status: accepted. Host startup must satisfy its existing 150 ms target on the reference machine, with >10 ms regression investigation. Workbench also has idle/first-use/streaming/disposal budgets. Performance numbers in VALIDATION are targets until measured. All measurements and validations run locally, including end-to-end tests in real Neovim instances. No GitHub Actions or other hosted CI is part of this project.
 
 ## ADR-011: Planning-Only Repository First
 

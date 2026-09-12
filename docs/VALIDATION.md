@@ -33,11 +33,25 @@ Contract tests run Files and a synthetic second provider through the same contro
 
 ## Test Harness
 
-WB-01 provides `make test`, `make test-integration`, `make test-ui`, `make bench` and `make check-ownership`. These are planned commands until WB-01 implements them. A missing command is not a passing gate. Use pinned mini.test in the development environment for child-Neovim control and screenshot assertions; do not add it to runtime dependencies. [mini.test](https://github.com/nvim-mini/mini.test).
+All validation runs locally. Do not add GitHub Actions or other hosted CI. Publication does not substitute for local verification, and no remote run URL is required as evidence.
+
+WB-01 provides `make test`, `make test-integration`, `make test-ui`, `make test-e2e`, `make bench` and `make check-ownership`. These are planned commands until WB-01 implements them. A missing command is not a passing gate. Use pinned mini.test in the development environment for child-Neovim control and screenshot assertions; do not add it to runtime dependencies. [mini.test](https://github.com/nvim-mini/mini.test).
 
 Tests run isolated from personal configuration and use temporary fixtures. Unit tests exercise pure data transitions. Integration tests run real rg/filesystem/Git processes and a deterministic fake LSP server with encoded positions, partial responses and controllable latency. At least one host integration run uses actual configured language servers and installed optional plugins. Verify test runner exits nonzero on failure.
 
 UI validation uses Neovim's real terminal/RPC grid, not a browser mockup. Capture text and highlight screenshots for the four grids in UX.md. Record mouse actions, focus IDs and editor buffer contents. Test terminal escape/control filenames without rendering active terminal control sequences. First release requires both macOS and Linux coverage, with unsupported environments reported separately.
+
+## Local End-To-End Testing
+
+`make test-e2e` launches a fresh local Neovim child for each isolated scenario or explicitly documented scenario group. Use dedicated temporary XDG config/data/state/cache directories, a controlled runtimepath and generated fixture workspace. Attach a real Neovim UI grid through RPC and send actual user commands/key/mouse input. Direct controller calls are useful for lower-level tests but do not satisfy end-to-end acceptance.
+
+Exercise the complete Files -> folder search -> results -> preview -> open -> return -> resume journey, followed by semantic discovery when implemented. Assert rendered rows/highlights, selected resource, current window/buffer, unchanged modified text, search scope and retained state. Use real filesystem/rg/Git processes for their scenarios. Use a deterministic local fake LSP server for race/failure cases and locally installed real servers for semantic integration acceptance; label each run accurately.
+
+Synchronize with observable state using bounded waits, not arbitrary long sleeps. Fail on timeouts, unexpected messages, invalid window writes, orphaned child processes or missing expected artifacts. On failure capture the last UI grid, message log, relevant model/resource snapshot, process exit status and exact reproduction command. Always dispose the child editor and its owned processes, including after failed assertions.
+
+Store run artifacts under `.test-output/e2e/<run-id>/`, with Neovim/dependency versions, fixture seed and tested revisions. Evidence records summarize these local results and link any small reviewed artifacts committed under `docs/evidence/`; large transient logs remain local. Repeat all four terminal grid sizes and relevant keyboard/mouse paths. Test harness failure detection by intentionally violating a focus/render assertion in a temporary fixture before treating it as a gate.
+
+Run platform checks on local hosts or local VMs. If a required platform or real language server is unavailable, record that gate as unverified and finish independent work; do not create a hosted CI job to satisfy it. The current planning-only revision has no runtime E2E suite yet. WB-01 creates the driver, and feature tasks add their scenarios as they become executable.
 
 ## Performance Targets
 
@@ -64,7 +78,7 @@ Fixture tiers: tiny 100 files; normal 10,000 files across nested folders with ab
 
 Measure blank startup, opening a source file, first InsertEnter, first save before InsertEnter, first tree open, first search, and active streaming responsiveness. Startup marker timings alone miss scheduled work. Record wall time to first usable input and first frame where the test harness supports it; no inferred UI-ready claim from `vim.schedule()`.
 
-Use fresh startup-log paths for each run because Neovim appends to existing files. Interleave baseline/candidate processes with identical Nix closure and plugin revisions. Report cold and warm cache conditions separately. Shared CI runners provide smoke and relative regression evidence; the host absolute threshold needs reference-host evidence.
+Use fresh startup-log paths for each run because Neovim appends to existing files. Interleave baseline/candidate processes with identical Nix closure and plugin revisions. Report cold and warm cache conditions separately. Run benchmarks locally under controlled conditions; the host absolute threshold needs reference-host evidence. A local VM's timings cannot substitute for reference-host measurements.
 
 ## Mandatory Negative Cases
 
@@ -81,7 +95,7 @@ Use fresh startup-log paths for each run because Neovim appends to existing file
 
 ## Evidence Format
 
-`docs/evidence/WB-NN.json` is the machine-readable record; use the neighboring template for narrative detail. Required fields: task, revision, environment, summary, gates. Each gate record has id, status, command, result, and artifacts. `status` must be `pass` for task completion. A command may be an explicit manual inspection procedure for a UX/ownership gate; do not fabricate a shell command for a human action. Artifact paths must exist inside the plugin repo. Detailed logs can be summarized with a reproducible fixture/command and an externally accessible CI run URL in result text; do not commit enormous generated fixtures.
+`docs/evidence/WB-NN.json` is the machine-readable record; use the neighboring template for narrative detail. Required fields: task, revision, environment, summary, gates. Each gate record has id, status, command, result, and artifacts. `status` must be `pass` for task completion. A command may be an explicit manual inspection procedure for a UX/ownership gate; do not fabricate a shell command for a human action. Artifact paths must exist inside the plugin repo. Summarize local logs with the exact fixture, command and observed result; include the local run directory in result text and commit only small reviewable evidence artifacts. Do not commit enormous generated fixtures or require a hosted run URL.
 
 Revision records the tested code commit(s) or a precise dirty-tree description plus diff artifact. Evidence updates themselves can be committed afterward; they must not obscure which code was tested. Cross-repository gates list every relevant commit in the environment/summary. The validator cannot detect forged evidence, so review must assess it.
 

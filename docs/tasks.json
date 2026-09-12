@@ -106,7 +106,7 @@
   "tasks": [
     {
       "id": "WB-01",
-      "title": "Harness and baseline",
+      "title": "Local Neovim E2E harness and baseline",
       "owner": "workbench",
       "repositories": [
         "workbench"

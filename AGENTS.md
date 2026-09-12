@@ -39,6 +39,8 @@ The initial planning revision is not a runtime release. Follow [docs/INTEGRATION
 
 ## Tests And Performance
 
+All validation is local. Do not create GitHub Actions or other hosted CI workflows. Runtime feature acceptance requires local end-to-end tests through real Neovim instances; mocks and planning checks supplement that evidence, not replace it.
+
 The existing Python checks cover planning artifacts only. Task WB-01 creates the Neovim runtime harness. Use pinned `mini.test` as a development-only dependency, or document an evidence-backed substitute before changing that choice. Do not install a test framework as a runtime dependency.
 
 Respect the host's 150 ms startup target and investigate deltas above 10 ms. New workbench budgets, benchmark conditions, and negative scenarios are in [docs/VALIDATION.md](docs/VALIDATION.md). Unmeasured targets are not measurements. Do not move work past the startup marker merely to improve that number.

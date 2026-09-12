@@ -25,6 +25,8 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 These commands validate the implementation package. They do not test a workbench runtime that does not yet exist.
 
+All validation is local; there is no GitHub CI. WB-01 establishes the local Neovim harness, including `make test-e2e` for real input, rendered views, provider execution, focus and cleanup. Runtime acceptance must use that local end-to-end evidence.
+
 Suggested implementation request:
 
 ```text

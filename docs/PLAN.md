@@ -13,6 +13,8 @@ The manifest is authoritative for dependencies, required gates, task status and 
 
 The user's requested milestone bounds execution. A request to implement the next task does not imply implementing every deferred feature. An agent can complete prerequisites within a requested milestone without asking again. Keep one active task by default; broader concurrent ownership is only used when explicitly authorized.
 
+All validation runs locally. Do not add GitHub Actions or other hosted CI. Runtime acceptance requires local Neovim end-to-end tests, not just unit tests or direct controller calls.
+
 ## Document Map
 
 | Need | Document |
@@ -43,7 +45,7 @@ Do not implement a wide API shell before a usable journey. Build Files with the 
 
 ### WB-01
 
-**Test harness, environment inventory and baseline.** Owner: workbench. Read VALIDATION and ADR-008/010. Create `tests/runtime/`, `bench/`, a minimal Neovim test init and development dependency pinning. Provide the five runtime commands specified in VALIDATION, fail nonzero on errors, and implement an initial literal import-boundary guard. Record installed optional plugin provenance and verify public APIs on the selected minimum Neovim patch and current host.
+**Local Neovim test harness, environment inventory and baseline.** Owner: workbench. Read VALIDATION and ADR-008/010. Create `tests/runtime/`, `tests/e2e/`, `bench/`, a minimal Neovim test init and development dependency pinning. Provide the six local runtime commands specified in VALIDATION, including `make test-e2e`, fail nonzero on errors, and implement an initial literal import-boundary guard. The end-to-end driver must launch real isolated Neovim processes, attach a UI grid, drive commands/key/mouse input, inspect rendered output and focus, and collect local artifacts. Prove the driver detects deliberately wrong rendering/focus and cleans up failed child processes. Record installed optional plugin provenance and verify public APIs on the selected minimum Neovim patch and current host. No hosted CI setup belongs to this task.
 
 Generate deterministic normal/stress fixtures outside the repo's tracked files. Measure startup and first-use baselines of the current host and an isolated plugin-free baseline. Intentionally break a test and import boundary in a temporary fixture to prove gates reject failures. Do not use historical 92/134 ms claims as fresh data. Done when the harness, fixture metadata and baseline evidence are reproducible; no runtime feature is implied.
 

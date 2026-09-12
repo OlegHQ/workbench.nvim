@@ -33,6 +33,8 @@ For feature work, start from the task's user-visible scenario and finish it end 
 
 ## Finish
 
+All validation runs locally; do not add GitHub Actions or other hosted CI. Run local Neovim end-to-end scenarios for runtime changes, driving actual commands/key input and checking rendered views, editor focus, real provider results and disposal. Follow VALIDATION.md for isolation and artifact requirements. Record unavailable local environments as unverified.
+
 Run applicable tests and benchmarks, record commands and results in a task evidence file, link it in `docs/tasks.json`, and run `python3 scripts/check_plan.py`. The validator checks evidence structure and dependencies; inspect whether evidence actually proves the behavior. Only then mark done. A review must check ownership/disposal and runtime performance as well as feature output.
 
 If publishing is authorized, follow the integration runbook: plugin first, parent pointer second, Nix pin at the matching released commit. Do not infer permission to publish unrelated repositories from a task claim. Leave a resumable report with completed task IDs, evidence paths, outstanding blockers, and the next dependency-ready task.

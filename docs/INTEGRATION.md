@@ -14,7 +14,7 @@ Locate repositories from actual Git state. The Nix checkout's documented path is
 
 ## Current Planning Delivery
 
-The planning repository has no runtime entrypoint. Adding its submodule makes docs/skills available without enabling features. Runtime flake wiring is intentionally WB-25. Do not install an empty plugin as evidence of runtime completion. Initial docs CI covers the plan validator and its negative tests only.
+The planning repository has no runtime entrypoint. Adding its submodule makes docs/skills available without enabling features. Runtime flake wiring is intentionally WB-25. Do not install an empty plugin as evidence of runtime completion. Run the plan validator and its negative tests locally. Do not add GitHub Actions or other hosted CI; runtime integration acceptance uses local Neovim end-to-end tests.
 
 Use `git@github.com:OlegHQ/workbench.nvim.git` in `.gitmodules`, `branch = dev`, and Git mode 160000 for the path. The parent's broad `pack` ignore rule means adding the submodule may require `git submodule add -f`; do not remove that ignore rule or stage raw plugin files. Gitlinks record exact commits; branch tracking is only an update policy. [Git submodules](https://git-scm.com/docs/git-submodule).
 
