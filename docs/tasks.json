@@ -1,0 +1,1093 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    "workbench",
+    "autoconf",
+    "themekit",
+    "nvim-config",
+    "nixos-config"
+  ],
+  "gate_ids": [
+    "G0",
+    "G1",
+    "G2",
+    "G3",
+    "G4",
+    "G5",
+    "G6",
+    "G7"
+  ],
+  "milestones": {
+    "foundation": [
+      "WB-01",
+      "WB-02",
+      "WB-03",
+      "WB-04",
+      "WB-05",
+      "WB-06"
+    ],
+    "exploration": [
+      "WB-01",
+      "WB-02",
+      "WB-03",
+      "WB-04",
+      "WB-05",
+      "WB-06",
+      "WB-07",
+      "WB-08",
+      "WB-09",
+      "WB-10",
+      "WB-11"
+    ],
+    "discovery": [
+      "WB-01",
+      "WB-02",
+      "WB-03",
+      "WB-04",
+      "WB-05",
+      "WB-06",
+      "WB-07",
+      "WB-08",
+      "WB-09",
+      "WB-10",
+      "WB-11",
+      "WB-12",
+      "WB-13",
+      "WB-14",
+      "WB-15",
+      "WB-16",
+      "WB-17"
+    ],
+    "host-rollout": [
+      "WB-01",
+      "WB-02",
+      "WB-03",
+      "WB-04",
+      "WB-05",
+      "WB-06",
+      "WB-07",
+      "WB-08",
+      "WB-09",
+      "WB-10",
+      "WB-11",
+      "WB-19",
+      "WB-24",
+      "WB-25"
+    ],
+    "core": [
+      "WB-01",
+      "WB-02",
+      "WB-03",
+      "WB-04",
+      "WB-05",
+      "WB-06",
+      "WB-07",
+      "WB-08",
+      "WB-09",
+      "WB-10",
+      "WB-11",
+      "WB-12",
+      "WB-13",
+      "WB-14",
+      "WB-15",
+      "WB-16",
+      "WB-17",
+      "WB-18",
+      "WB-19",
+      "WB-20",
+      "WB-21",
+      "WB-22",
+      "WB-23",
+      "WB-24",
+      "WB-25",
+      "WB-26"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "WB-01",
+      "title": "Harness and baseline",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "tests/",
+          "bench/",
+          "Makefile",
+          "lua/workbench/"
+        ]
+      },
+      "depends_on": [],
+      "gates": [
+        "G0",
+        "G1",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-01",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-02",
+      "title": "Repair editor feature ownership",
+      "owner": "autoconf",
+      "repositories": [
+        "autoconf"
+      ],
+      "allowed_paths": {
+        "autoconf": [
+          "lua/autoconf/sys/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-01"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-02",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-03",
+      "title": "Explorer feasibility experiment",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "tests/",
+          "bench/",
+          "docs/DECISIONS.md"
+        ]
+      },
+      "depends_on": [
+        "WB-01"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-03",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-04",
+      "title": "Resource location and workspace model",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/core/",
+          "lua/workbench/services/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-01"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-04",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-05",
+      "title": "Scopes actions and lazy composition",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/",
+          "plugin/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-04"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-05",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-06",
+      "title": "Layout and projection lifecycle",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/ui/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-03",
+        "WB-05"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-06",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-07",
+      "title": "Read-only Files sidebar",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "lua/workbench/ui/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-04",
+        "WB-06"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-07",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-08",
+      "title": "Results preview and navigation",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/services/",
+          "lua/workbench/ui/",
+          "lua/workbench/adapters/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-06"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-08",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-09",
+      "title": "Structured rg provider",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "tests/",
+          "bench/"
+        ]
+      },
+      "depends_on": [
+        "WB-04",
+        "WB-05",
+        "WB-08"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-09",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-10",
+      "title": "Search interface and action palette",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/controllers/",
+          "lua/workbench/ui/",
+          "lua/workbench/adapters/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-07",
+        "WB-08",
+        "WB-09"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-10",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-11",
+      "title": "Exploration acceptance",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "tests/",
+          "bench/"
+        ]
+      },
+      "depends_on": [
+        "WB-02",
+        "WB-07",
+        "WB-08",
+        "WB-10"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-11",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-12",
+      "title": "LSP routing and normalization",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-05",
+        "WB-08"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-12",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-13",
+      "title": "Outline and breadcrumbs",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/controllers/",
+          "lua/workbench/ui/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-07",
+        "WB-12"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-13",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-14",
+      "title": "Symbols and reference navigation",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-10",
+        "WB-12"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-14",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-15",
+      "title": "Lazy call hierarchy",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "lua/workbench/ui/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-13",
+        "WB-14"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-15",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-16",
+      "title": "Reported Problems and badges",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-07",
+        "WB-12"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4"
+      ],
+      "spec": "docs/PLAN.md#wb-16",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-17",
+      "title": "Discovery acceptance",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "tests/",
+          "bench/"
+        ]
+      },
+      "depends_on": [
+        "WB-11",
+        "WB-13",
+        "WB-14",
+        "WB-15",
+        "WB-16"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-17",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-18",
+      "title": "Working set and dirty-buffer search",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "lua/workbench/services/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-10",
+        "WB-14"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-18",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-19",
+      "title": "Settings and autoconf integration",
+      "owner": "workbench",
+      "repositories": [
+        "workbench",
+        "autoconf"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/",
+          "tests/"
+        ],
+        "autoconf": [
+          "lua/autoconf/sys/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-02",
+        "WB-05",
+        "WB-10"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-19",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-20",
+      "title": "Read-only Git source",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-07",
+        "WB-08"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-20",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-21",
+      "title": "Filesystem operation service",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/services/",
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-07",
+        "WB-12",
+        "WB-19"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5",
+        "G6"
+      ],
+      "spec": "docs/PLAN.md#wb-21",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-22",
+      "title": "Reviewed literal replacement",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/services/",
+          "lua/workbench/providers/",
+          "lua/workbench/controllers/",
+          "lua/workbench/ui/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-18",
+        "WB-21"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5",
+        "G6"
+      ],
+      "spec": "docs/PLAN.md#wb-22",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-23",
+      "title": "Persistence and session recovery",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/services/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-08",
+        "WB-19"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-23",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-24",
+      "title": "Semantic theming and usability",
+      "owner": "workbench",
+      "repositories": [
+        "workbench",
+        "themekit"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/ui/",
+          "tests/"
+        ],
+        "themekit": [
+          "lua/themekit/handlers/",
+          "lua/themekit/highlight/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-06",
+        "WB-10"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-24",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-25",
+      "title": "Runtime packaging and rollout",
+      "owner": "nvim-config",
+      "repositories": [
+        "nvim-config",
+        "workbench",
+        "autoconf",
+        "themekit",
+        "nixos-config"
+      ],
+      "allowed_paths": {
+        "nvim-config": [
+          "config.toml",
+          "init.lua",
+          "flake.nix",
+          "flake.lock",
+          ".gitmodules",
+          "pack/plugins/start/",
+          "README.md"
+        ],
+        "workbench": [
+          "docs/",
+          "README.md"
+        ],
+        "autoconf": [
+          "lua/autoconf/sys/",
+          "tests/"
+        ],
+        "themekit": [
+          "lua/themekit/handlers/",
+          "tests/"
+        ],
+        "nixos-config": [
+          "home/default.nix",
+          "flake.nix",
+          "flake.lock"
+        ]
+      },
+      "depends_on": [
+        "WB-11",
+        "WB-19",
+        "WB-24"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5",
+        "G7"
+      ],
+      "spec": "docs/PLAN.md#wb-25",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-26",
+      "title": "Core release acceptance",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "tests/",
+          "bench/"
+        ]
+      },
+      "depends_on": [
+        "WB-17",
+        "WB-18",
+        "WB-19",
+        "WB-20",
+        "WB-21",
+        "WB-22",
+        "WB-23",
+        "WB-24",
+        "WB-25"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5",
+        "G6",
+        "G7"
+      ],
+      "spec": "docs/PLAN.md#wb-26",
+      "status": "todo",
+      "assignee": null,
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "WB-27",
+      "title": "Multi-root execution",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-26"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-27",
+      "status": "deferred",
+      "assignee": null,
+      "evidence": [],
+      "blocker": "Follow-on capability; promote with a specific implementation request and complete specification."
+    },
+    {
+      "id": "WB-28",
+      "title": "Terminals and tasks",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-26"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-28",
+      "status": "deferred",
+      "assignee": null,
+      "evidence": [],
+      "blocker": "Follow-on capability; promote with a specific implementation request and complete specification."
+    },
+    {
+      "id": "WB-29",
+      "title": "Tests and debugging adapters",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "lua/workbench/adapters/",
+          "tests/"
+        ]
+      },
+      "depends_on": [
+        "WB-26"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5"
+      ],
+      "spec": "docs/PLAN.md#wb-29",
+      "status": "deferred",
+      "assignee": null,
+      "evidence": [],
+      "blocker": "Follow-on capability; promote with a specific implementation request and complete specification."
+    },
+    {
+      "id": "WB-30",
+      "title": "Remote structural and advanced-search design",
+      "owner": "workbench",
+      "repositories": [
+        "workbench"
+      ],
+      "allowed_paths": {
+        "workbench": [
+          "docs/"
+        ]
+      },
+      "depends_on": [
+        "WB-26"
+      ],
+      "gates": [
+        "G0",
+        "G1",
+        "G2",
+        "G3",
+        "G4",
+        "G5",
+        "G6"
+      ],
+      "spec": "docs/PLAN.md#wb-30",
+      "status": "deferred",
+      "assignee": null,
+      "evidence": [],
+      "blocker": "Follow-on capability; promote with a specific implementation request and complete specification."
+    }
+  ]
+}
