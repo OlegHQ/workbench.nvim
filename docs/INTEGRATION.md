@@ -12,9 +12,9 @@
 
 Locate repositories from actual Git state. The Nix checkout's documented path is `nixos-config/`; if absent, inspect known workspace configuration or ask for its location only when activation is the remaining dependent task. Do not create a fake checkout or claim `make switch` passed. Complete independent plugin tests first.
 
-## Current Planning Delivery
+## Current Runtime Delivery
 
-The last published Workbench revision is planning-only, while this local task workspace contains an unpublished runtime implementation. The submodule is the native runtime source locally; the root flake wiring is optional and its current lock still resolves to the planning-only SHA. Do not treat that lock as an installed runtime or install an empty plugin as evidence of completion. Run the plan validator and its negative tests locally. Do not add GitHub Actions or other hosted CI; runtime integration acceptance uses local Neovim end-to-end tests.
+The Workbench runtime is published on `dev`. The parent submodule gitlink and optional flake input must resolve to the same published revision before a host release is considered synchronized. Run the plan validator and its negative tests locally. Do not add GitHub Actions or other hosted CI; runtime integration acceptance uses local Neovim end-to-end tests.
 
 Use `git@github.com:OlegHQ/workbench.nvim.git` in `.gitmodules`, `branch = dev`, and Git mode 160000 for the path. The parent's broad `pack` ignore rule means adding the submodule may require `git submodule add -f`; do not remove that ignore rule or stage raw plugin files. Gitlinks record exact commits; branch tracking is only an update policy. [Git submodules](https://git-scm.com/docs/git-submodule).
 
