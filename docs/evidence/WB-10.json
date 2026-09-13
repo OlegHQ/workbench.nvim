@@ -1,0 +1,118 @@
+{
+  "task": "WB-10",
+  "revision": "Dirty workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a; new Search controller/UI and runtime/E2E additions are captured in docs/evidence/WB-10.diff. Shared edits to the existing rg provider, view/layout, and Makefile are listed and reviewed in G0 artifacts. The WB-10 grid assertion was corrected to click any actually visible selectable result row (match or file group); the 8-line pane can legitimately show a selected match without its group row. No commit or publish was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; ripgrep 15.2.0 (e89fff89ac); Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1. Provider performance used the seed-20260912 normal fixture (10,000 files, 20,480,000 content bytes).",
+  "summary": "Implemented the persistent Search controller and projection, context-sensitive action palette, scoped/debounced rg searches, visible query/scope/flags/policy and disk-vs-unsaved state, streaming/grouped results with caps, cancellation and stale-generation rejection, preview/open/return/resume, explicit unavailable capabilities, and folder/current-file scope handling. Search remains independently constructed; no host startup, Nix, theme, or plugin-install wiring changed. WB-18 open-buffer/unsaved-content search remains explicitly unavailable rather than silently mixing disk and buffer results.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; review docs/tasks.json#WB-10 allowed paths and the Search controller, UI projections, rg provider boundary, and disposal registrations",
+      "result": "Ownership validation passed for 22 Lua modules. The controller owns per-tab investigation/query state, debounce timers, request generations and preview sessions; the rg provider owns subprocess/parser resources; layout/view own their windows and buffers; the palette owns its transient view. UI projections do not import providers, Search receives injected provider/store/navigation/layout dependencies, and both direct close and controller disposal finalize a running result before releasing its request scope. WB-10 source/test paths stay in the task's declared controller, UI, provider, Makefile and test areas. No init/bootstrap, hosted CI, or third-party dependency changes were made.",
+      "artifacts": [
+        "docs/evidence/WB-10.diff",
+        "docs/tasks.json",
+        "lua/workbench/controllers/search.lua",
+        "lua/workbench/ui/search.lua",
+        "lua/workbench/ui/palette.lua",
+        "lua/workbench/ui/view.lua",
+        "lua/workbench/ui/layout.lua",
+        "lua/workbench/providers/rg.lua",
+        "tests/check_ownership.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 69 mini.test cases passed on both Neovim 0.11.7 and 0.12.4; all 21 Python integration/plan tests passed and scripts/check_plan.py reported a valid planning structure. Search coverage includes real-rg folder scoping and ignore behavior, modified-buffer disk labeling, empty query, invalid regex/error, no matches, missing rg, disabled WB-18 action reasons, debounce coalescing, stale-generation rejection, resumable history and explicit current-file semantics.",
+      "artifacts": [
+        "tests/runtime/test_search_controller.lua",
+        "tests/runtime/test_rg_provider.lua",
+        "tests/runtime/run.lua",
+        "tests/test_plan.py",
+        "scripts/check_plan.py"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; make test-ui; make test-e2e",
+      "result": "The delayed third-generation batch delivered after Search close was rejected; the running result became cancelled and retained zero late items. One hundred repeated missing-rg open/close cycles left zero controller/layout views and provider requests on both Neovim versions. Real-grid teardown also left zero Search views, layout views and provider requests while preserving modified editor/origin buffers. Existing lifecycle suites passed their 100-cycle and foreign-autocmd preservation checks.",
+      "artifacts": [
+        "tests/runtime/test_search_controller.lua",
+        "tests/e2e/wb10_search.py",
+        ".test-output/e2e/wb10/20260912T202155Z-160x50-5622e5/result.json",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "make test-ui; make test-e2e",
+      "result": "The complete make test-e2e target exited 0 after a fresh WB-10 run on Neovim 0.11.7 and 0.12.4 at 160x50, 120x35, 80x24 and 60x20. The real-rg walkthrough covers UX-02 folder A while cwd is B, UX-03 stale/debounced generations, UX-04 modified-buffer preview without changing the user's buffer or jumplist, and the Search→preview→open→return→resume portion of UX-05. Actual key and mouse input selected a visible result row and retained Search focus; 60x20 used an overlay. Empty query/no scan, debounce/loading, invalid-regex error, completed no-match, partial/truncated results, cancellation, and discoverable disabled WB-18 action states were asserted in rendered grids. The full UX-05 references step remains outside WB-10 scope.",
+      "artifacts": [
+        ".test-output/e2e/wb10/20260912T202155Z-160x50-5622e5/result.json",
+        ".test-output/e2e/wb10/20260912T202156Z-120x35-5a9aa2/result.json",
+        ".test-output/e2e/wb10/20260912T202157Z-80x24-c06fbe/result.json",
+        ".test-output/e2e/wb10/20260912T202157Z-60x20-b243e6/result.json",
+        ".test-output/e2e/wb10/20260912T202158Z-160x50-b87f19/result.json",
+        ".test-output/e2e/wb10/20260912T202159Z-120x35-d971aa/result.json",
+        ".test-output/e2e/wb10/20260912T202159Z-80x24-759d8a/result.json",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/result.json",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/empty-query-screen.txt",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/invalid-regex-screen.txt",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/no-match-screen.txt",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/cancelled-screen.txt",
+        ".test-output/e2e/wb10/20260913T073648Z-160x50-82a05c/result.json",
+        ".test-output/e2e/wb10/20260913T073649Z-120x35-27bff2/result.json",
+        ".test-output/e2e/wb10/20260913T073649Z-80x24-343a3f/result.json",
+        ".test-output/e2e/wb10/20260913T073650Z-60x20-779f59/result.json",
+        ".test-output/e2e/wb10/20260913T073651Z-160x50-19429e/result.json",
+        ".test-output/e2e/wb10/20260913T073651Z-120x35-5a5f3d/result.json",
+        ".test-output/e2e/wb10/20260913T073652Z-80x24-4218ee/result.json",
+        ".test-output/e2e/wb10/20260913T073653Z-60x20-a15aa0/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python bench/measure_rg_provider.py --nvim <0.11.7 and 0.12.4> --fixture .bench-output/fixtures/normal-20260912T195301Z-473e27 --repetitions 20; .test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim; make test-e2e",
+      "result": "Provider measurements (warm filesystem, no debounce, 20 samples/version): first-batch p50/p95 was 8.559/67.479 ms on Neovim 0.11.7 and 8.901/76.122 ms on 0.12.4, below the 150 ms p95 target. Completion p95 was 467.392/428.825 ms; all 20 runs per version reported the configured 8 MiB result-byte cap as partial, retaining at most 9,866 items and 8,388,550 accounted bytes. Maximum pending parser output was 7,841/65,054 bytes, sampled combined Neovim+rg peak RSS was 18,672/19,776 KiB, and cancellation-to-process-exit p95 was 0.149/0.118 ms. In the final eight-grid Search run, first-result p95 was 110.032/102.147 ms and first-shell p95 was 17.743/17.038 ms. An earlier full-grid sample had one 169.036 ms 0.11.7 first-shell outlier at 120x35; ten exact-grid repetitions measured 17.544–21.420 ms, and the final eight-grid run remained 16.171–17.743 ms, so the outlier was non-reproducible and is retained here rather than omitted. Host startup marker p50/p95 was 44.120/51.356 ms versus the prior WB-09 43.745/44.236 ms baseline (delta +0.375/+7.120 ms, under the 10 ms investigation threshold and 150 ms budget). No new workbench module appeared in startup rows over 5 ms; the same existing LSP/themekit/autoconf rows remained.",
+      "artifacts": [
+        ".bench-output/fixtures/normal-20260912T195301Z-473e27/fixture.json",
+        ".bench-output/measurements/wb10-provider-0117.json",
+        ".bench-output/measurements/wb10-provider-0124.json",
+        ".bench-output/startup/20260912T200922Z-baseline-d96b84/baseline.json",
+        ".bench-output/startup/20260912T183450Z-baseline-671cff/baseline.json",
+        ".test-output/e2e/wb10/20260912T201632Z-120x35-fb7b0e/result.json",
+        ".test-output/e2e/wb10/20260912T202155Z-160x50-5622e5/result.json",
+        ".test-output/e2e/wb10/20260912T202156Z-120x35-5a9aa2/result.json",
+        ".test-output/e2e/wb10/20260912T202157Z-80x24-c06fbe/result.json",
+        ".test-output/e2e/wb10/20260912T202157Z-60x20-b243e6/result.json",
+        ".test-output/e2e/wb10/20260912T202158Z-160x50-b87f19/result.json",
+        ".test-output/e2e/wb10/20260912T202159Z-120x35-d971aa/result.json",
+        ".test-output/e2e/wb10/20260912T202159Z-80x24-759d8a/result.json",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/result.json",
+        ".test-output/e2e/wb10/20260912T201738Z-120x35-213785/result.json",
+        ".test-output/e2e/wb10/20260912T201739Z-120x35-4ab2ea/result.json",
+        ".test-output/e2e/wb10/20260912T201739Z-120x35-66db53/result.json",
+        ".test-output/e2e/wb10/20260912T201740Z-120x35-cda62b/result.json",
+        ".test-output/e2e/wb10/20260912T201741Z-120x35-81b0c3/result.json",
+        ".test-output/e2e/wb10/20260912T201741Z-120x35-fc0ae0/result.json",
+        ".test-output/e2e/wb10/20260912T201742Z-120x35-a26b4c/result.json",
+        ".test-output/e2e/wb10/20260912T201743Z-120x35-8fae6b/result.json",
+        ".test-output/e2e/wb10/20260912T201743Z-120x35-b5f059/result.json",
+        ".test-output/e2e/wb10/20260912T201744Z-120x35-03b135/result.json",
+        ".test-output/e2e/wb10/20260912T202155Z-160x50-5622e5/result.json",
+        ".test-output/e2e/wb10/20260912T202156Z-120x35-5a9aa2/result.json",
+        ".test-output/e2e/wb10/20260912T202157Z-80x24-c06fbe/result.json",
+        ".test-output/e2e/wb10/20260912T202157Z-60x20-b243e6/result.json",
+        ".test-output/e2e/wb10/20260912T202158Z-160x50-b87f19/result.json",
+        ".test-output/e2e/wb10/20260912T202159Z-120x35-d971aa/result.json",
+        ".test-output/e2e/wb10/20260912T202159Z-80x24-759d8a/result.json",
+        ".test-output/e2e/wb10/20260912T202200Z-60x20-011c55/result.json"
+      ]
+    }
+  ]
+}

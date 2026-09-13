@@ -1,0 +1,536 @@
+--- a/lua/autoconf/sys/commands/init.lua
++++ b/lua/autoconf/sys/commands/init.lua
+@@ -12,8 +12,21 @@
+         local full_key = prefix == "" and key or (prefix .. "." .. key)
+ 
+         if type(value) == "table" then
+-            -- Recursively collect keys from nested tables
+-            collect_config_keys(value, full_key, keys)
++            local count, maximum = 0, 0
++            local is_array = true
++            for array_key in pairs(value) do
++                if type(array_key) ~= "number" or array_key < 1 or array_key % 1 ~= 0 then
++                    is_array = false
++                    break
++                end
++                count = count + 1
++                maximum = math.max(maximum, array_key)
++            end
++            if is_array and count == maximum and count > 0 then
++                table.insert(keys, { key = full_key, value = value, type = "table" })
++            else
++                collect_config_keys(value, full_key, keys)
++            end
+         else
+             -- Add the key-value pair to our collection
+             table.insert(keys, {
+@@ -37,8 +50,12 @@
+         local status
+         local is_resolved = false
+ 
++        -- Workbench settings are validated atomically by its explicit TOML schema.
++        if item.key:sub(1, #"editor.workbench.") == "editor.workbench." then
++            is_resolved = require("autoconf.sys.resolvers.editor.workbench").is_supported_path(item.key)
++            status = is_resolved and "✓ RESOLVED (workbench schema)" or "✗ NOT RESOLVED"
+         -- Special handling for keymap paths
+-        if resolvers.is_keymap_path(item.key) then
++        elseif resolvers.is_keymap_path(item.key) then
+             is_resolved = resolvers.is_keymap_resolved(item.key)
+             status = is_resolved and "✓ KEYMAP RESOLVED" or "✗ KEYMAP FAILED"
+ 
+--- a/lua/autoconf/sys/resolvers/editor/completion.lua
++++ b/lua/autoconf/sys/resolvers/editor/completion.lua
+@@ -136,9 +136,10 @@
+ end
+ 
+ M.auto_completion = function(value)
+-    if not valid_boolean("editor.auto-completion", value) then return end
++    if not valid_boolean("editor.auto-completion", value) then return false end
+     state.auto_completion = value
+     logger.resolver_success("editor.auto-completion", value and "enabled in Blink when initialized" or "disabled in Blink")
++    return true
+ end
+ 
+ M.snippets = function(value)
+--- a/lua/autoconf/sys/resolvers/editor/diagnostics.lua
++++ b/lua/autoconf/sys/resolvers/editor/diagnostics.lua
+@@ -1,5 +1,6 @@
+ local logger = require("autoconf.sys.core.logger")
+ local M = {}
++local requested_inline = nil
+ 
+ 
+ -- Diagnostic-related functions will be moved here
+@@ -14,7 +15,7 @@
+     -- Validate config is a table
+     if type(config) ~= "table" then
+         logger.resolver_error("editor.inline-diagnostics", "must be a table, got: " .. type(config))
+-        return
++        return false
+     end
+ 
+     local inline_config = false
+@@ -23,19 +24,44 @@
+     elseif config.enabled then
+         inline_config = true
+     end
++    requested_inline = config.enabled == true or config["only-current-line"] == true
+ 
+     if vim.fn.has("nvim-0.11") == 1 then
+         vim.diagnostic.config({ virtual_lines = inline_config })
+-        return
++        return true
+     end
+ 
+     local ok, lsp_lines = pcall(require, "lsp_lines")
+     if ok then
+         lsp_lines.setup()
+         vim.diagnostic.config({ virtual_lines = inline_config })
++        return true
+     elseif inline_config then
+         logger.warn("editor.inline-diagnostics requested, but lsp_lines is not available")
++        return false
+     end
++    return true
+ end
+ 
++function M.inline_diagnostics_status()
++    local ok, config = pcall(vim.diagnostic.config)
++    if not ok or type(config) ~= "table" then
++        return { requested = requested_inline == true, effective = false, state = "unavailable" }
++    end
++    local value = config.virtual_lines
++    local effective = value == true or type(value) == "table"
++    local requested = requested_inline
++    if requested == nil then requested = effective end
++    return {
++        requested = requested,
++        effective = effective,
++        state = "ready",
++    }
++end
++
++function M.inline_diagnostics_capabilities()
++    if vim.fn.has("nvim-0.11") == 1 then return { available = true, state = "ready" } end
++    return { available = false, state = "unavailable", reason = "inline diagnostics require Neovim 0.11 or lsp_lines" }
++end
++
+ return M
+--- a/lua/autoconf/sys/resolvers/editor/formatting.lua
++++ b/lua/autoconf/sys/resolvers/editor/formatting.lua
+@@ -11,7 +11,7 @@
+     -- Validate that the value is a boolean
+     if type(value) ~= "boolean" then
+         logger.resolver_error("editor.auto-format", "must be a boolean, got: " .. type(value))
+-        return
++        return false
+     end
+ 
+     vim.api.nvim_clear_autocmds({ group = auto_format_group })
+@@ -28,12 +28,25 @@
+             desc = "Autoconf format on save (lazy Conform/LSP)",
+         })
+         logger.resolver_success("editor.auto-format", "enabled with one lazy save hook")
++        return true
+     else
+         vim.api.nvim_clear_autocmds({ group = auto_format_group })
+         logger.resolver_success("editor.auto-format", "disabled")
++        return true
+     end
+ end
+ 
++function M.auto_format_status()
++    local requested = vim.g.autoconf_auto_format_requested == true
++    local ok, hooks = pcall(vim.api.nvim_get_autocmds, { group = auto_format_group })
++    return {
++        requested = requested,
++        effective = ok and #hooks > 0 or false,
++        hook_count = ok and #hooks or 0,
++        state = ok and "ready" or "error",
++    }
++end
++
+ M.trim_trailing_whitespace = function(value)
+     -- Validate that the value is a boolean
+     if type(value) ~= "boolean" then
+--- a/lua/autoconf/sys/resolvers/editor/init.lua
++++ b/lua/autoconf/sys/resolvers/editor/init.lua
+@@ -25,6 +25,7 @@
+     local lsp = require("autoconf.sys.resolvers.editor.lsp")
+     local filepicker = require("autoconf.sys.resolvers.editor.filepicker")
+     local mini_files = require("autoconf.sys.resolvers.editor.mini_files")
++    local workbench = require("autoconf.sys.resolvers.editor.workbench")
+     -- ========================================
+     -- Resolvers NOT using auto-registration
+     -- (builder.custom or manual functions)
+@@ -84,6 +85,7 @@
+ 
+     -- Diagnostics and file picker
+     resolvers.define_resolver("editor.inline-diagnostics", diagnostics.inline_diagnostics)
++    resolvers.define_resolver("editor.workbench", workbench.configure)
+     resolvers.define_resolver("editor.file-picker", filepicker.filepicker)
+     resolvers.define_resolver("editor.mini-files", mini_files.configure)
+ 
+--- /dev/null
++++ b/lua/autoconf/sys/resolvers/editor/workbench.lua
+@@ -0,0 +1,218 @@
++local logger = require("autoconf.sys.core.logger")
++
++local M = {}
++
++-- This is a translation map, not a second defaults/type schema. Workbench
++-- validates the translated Lua config against its authoritative schema.
++local toml_fields = {
++  enable = "enabled",
++  sidebar = {
++    position = "position",
++    width = "width",
++    views = "views",
++    ["follow-active-file"] = "follow_active_file",
++  },
++  search = {
++    ["debounce-ms"] = "debounce_ms",
++    ["max-results"] = "max_results",
++    hidden = "hidden",
++    ignored = "ignored",
++    ["follow-symlinks"] = "follow_symlinks",
++  },
++  preview = { enable = "enabled", ["max-bytes"] = "max_bytes" },
++  session = { persist = "persist", ["max-results-history"] = "max_results_history" },
++}
++
++local active_handles = {}
++
++local function is_object(value)
++  if type(value) ~= "table" then return false end
++  for key in pairs(value) do if type(key) ~= "string" then return false end end
++  return true
++end
++
++local function is_dense_array(value)
++  if type(value) ~= "table" then return false end
++  local count, maximum = 0, 0
++  for key in pairs(value) do
++    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then return false end
++    count = count + 1
++    maximum = math.max(maximum, key)
++  end
++  return count == maximum
++end
++
++local function config_error(path, message)
++  return nil, { code = "invalid_config", path = path, message = path .. " " .. message }
++end
++
++local function translate_table(value, mapping, path)
++  if not is_object(value) then return config_error(path, "must be a table") end
++  local result = {}
++  for key, item in pairs(value) do
++    local target = mapping[key]
++    if target == nil then return config_error(path .. "." .. tostring(key), "is not a supported workbench TOML key") end
++    if type(target) == "table" then
++      local translated, err = translate_table(item, target, path .. "." .. key)
++      if not translated then return nil, err end
++      result[key] = translated
++    else
++      if type(item) == "table" and target == "views" and is_dense_array(item) then
++        result[target] = vim.deepcopy(item)
++      elseif type(item) == "table" then
++        return config_error(path .. "." .. key, "must be a scalar or list value")
++      else
++        result[target] = vim.deepcopy(item)
++      end
++    end
++  end
++  return result
++end
++
++function M.translate(config)
++  return translate_table(config, toml_fields, "editor.workbench")
++end
++
++function M.is_supported_path(path)
++  local prefix = "editor.workbench."
++  if type(path) ~= "string" or path:sub(1, #prefix) ~= prefix then return false end
++  local mapping = toml_fields
++  local remainder = path:sub(#prefix + 1)
++  local parts = {}
++  for part in remainder:gmatch("[^%.]+") do parts[#parts + 1] = part end
++  if #parts == 0 then return false end
++  for index, part in ipairs(parts) do
++    local target = mapping[part]
++    if target == nil then return false end
++    if index == #parts then return type(target) == "string" end
++    if type(target) ~= "table" then return false end
++    mapping = target
++  end
++  return false
++end
++
++local function completion_adapter(completion)
++  local function state()
++    local status = completion.status()
++    return status, status.effective or "unknown"
++  end
++  return {
++    scope = "global",
++    capabilities = function()
++      local _, runtime = state()
++      local unavailable = runtime:find("unavailable", 1, true) or runtime:find("failed", 1, true)
++      local pending = runtime:find("pending", 1, true)
++      return {
++        available = not unavailable,
++        state = unavailable and "unavailable" or (pending and "pending" or "ready"),
++        reason = unavailable and runtime or (pending and "Blink setup is deferred; the completion policy remains live" or nil),
++      }
++    end,
++    get = function()
++      local status, runtime = state()
++      local value = status.requested.auto_completion
++      return { requested = value, effective = value, provenance = "autoconf", runtime_state = runtime }
++    end,
++    set = function(value)
++      if completion.auto_completion(value) ~= true then return false, "Autoconf rejected completion setting" end
++      return true
++    end,
++  }
++end
++
++local function formatting_adapter(formatting)
++  return {
++    scope = "global",
++    capabilities = function()
++      local status = formatting.auto_format_status()
++      return { available = status.state == "ready", state = status.state }
++    end,
++    get = function()
++      local status = formatting.auto_format_status()
++      return { requested = status.requested, effective = status.effective, provenance = "autoconf" }
++    end,
++    set = function(value)
++      if formatting.auto_format(value) ~= true then return false, "Autoconf rejected format-on-save setting" end
++      return true
++    end,
++  }
++end
++
++local function diagnostics_adapter(diagnostics)
++  return {
++    scope = "global",
++    capabilities = diagnostics.inline_diagnostics_capabilities,
++    get = function()
++      local status = diagnostics.inline_diagnostics_status()
++      return { requested = status.requested, effective = status.effective, provenance = "autoconf" }
++    end,
++    set = function(value)
++      if diagnostics.inline_diagnostics({ enabled = value }) ~= true then return false, "Autoconf rejected inline-diagnostics setting" end
++      return true
++    end,
++  }
++end
++
++local function adapters()
++  return {
++    completion = completion_adapter(require("autoconf.sys.resolvers.editor.completion")),
++    formatting = formatting_adapter(require("autoconf.sys.resolvers.editor.formatting")),
++    diagnostics = diagnostics_adapter(require("autoconf.sys.resolvers.editor.diagnostics")),
++  }
++end
++
++local adapter_order = { "completion", "formatting", "diagnostics" }
++
++function M.configure(config)
++  local translated, translate_error = M.translate(config)
++  if not translated then
++    logger.resolver_error("editor.workbench", translate_error.message)
++    return false
++  end
++
++  local workbench_ok, workbench = pcall(require, "workbench")
++  if not workbench_ok then
++    logger.resolver_error("editor.workbench", "workbench plugin is unavailable: " .. tostring(workbench))
++    return false
++  end
++  local normalized, validation_error = workbench.validate_config(translated)
++  if not normalized then
++    logger.resolver_error("editor.workbench", validation_error.message or "workbench configuration is invalid")
++    return false
++  end
++
++  local current = workbench.get_status()
++  if current.reason == "not_setup" then
++    local initialized, initialize_error = workbench.setup({})
++    if not initialized then
++      logger.resolver_error("editor.workbench", initialize_error and initialize_error.message or "workbench initialization failed")
++      return false
++    end
++  end
++
++  local candidates = {}
++  local available_adapters = adapters()
++  for _, id in ipairs(adapter_order) do
++    local adapter = available_adapters[id]
++    local handle, register_error = workbench.register_setting_adapter(id, adapter, { replace = true })
++    if not handle then
++      for index = #candidates, 1, -1 do candidates[index]:dispose() end
++      logger.resolver_error("editor.workbench", register_error and register_error.message or "could not register editor setting adapter " .. id)
++      return false
++    end
++    candidates[#candidates + 1] = handle
++  end
++
++  local configured, configure_error = workbench.setup(normalized, { source = "autoconf.toml", replace_source = true })
++  if not configured then
++    for index = #candidates, 1, -1 do candidates[index]:dispose() end
++    logger.resolver_error("editor.workbench", configure_error and configure_error.message or "workbench setup failed")
++    return false
++  end
++  for _, handle in ipairs(active_handles) do handle:dispose() end
++  active_handles = candidates
++  logger.resolver_success("editor.workbench", "validated config and registered completion, formatting, and diagnostics adapters")
++  return true
++end
++
++return M
+--- a/tests/run.lua
++++ b/tests/run.lua
+@@ -207,3 +207,7 @@
+ equal(autocmd_count("InsertEnter", "AutoconfDeferredCompletion"), 0, "completed Blink setup is not re-armed")
+ 
+ print("autoconf repair tests passed")
++
++local run_source = debug.getinfo(1, "S").source:sub(2)
++local tests_root = vim.fn.fnamemodify(run_source, ":p:h")
++dofile(tests_root .. "/workbench_integration.lua")
+--- /dev/null
++++ b/tests/workbench_integration.lua
+@@ -0,0 +1,129 @@
++local source = debug.getinfo(1, "S").source:sub(2)
++local tests_root = vim.fn.fnamemodify(source, ":p:h")
++local autoconf_root = vim.fn.fnamemodify(tests_root, ":h")
++local start_root = vim.fn.fnamemodify(autoconf_root, ":h")
++local workbench_root = start_root .. "/workbench.nvim"
++vim.opt.runtimepath:append(workbench_root)
++
++local toml = require("autoconf.toml")
++local translator = require("autoconf.sys.resolvers.editor.workbench")
++local parsed = toml.parse([[
++[editor.workbench]
++enable = true
++
++[editor.workbench.sidebar]
++position = "right"
++width = 40
++views = ["files"]
++follow-active-file = false
++
++[editor.workbench.search]
++debounce-ms = 0
++max-results = 500
++hidden = true
++ignored = false
++follow-symlinks = false
++
++[editor.workbench.preview]
++enable = false
++max-bytes = 65536
++
++[editor.workbench.session]
++persist = false
++max-results-history = 5
++]])
++
++local translated = assert(translator.translate(parsed.editor.workbench))
++assert(translated.enabled == true, "TOML enable maps to public enabled without losing true")
++assert(translated.sidebar.position == "right" and translated.sidebar.width == 40, "nested sidebar fields translate")
++assert(translated.sidebar.follow_active_file == false, "false follow-active-file is retained")
++assert(vim.deep_equal(translated.sidebar.views, { "files" }), "views list is copied and replaced")
++assert(translated.search.debounce_ms == 0 and translated.search.hidden == true, "numeric zero and true search fields translate")
++assert(translated.search.ignored == false and translated.search.follow_symlinks == false, "false search fields are retained")
++assert(translated.preview.enabled == false and translated.session.persist == false, "nested false enable/persist are retained")
++assert(translator.is_supported_path("editor.workbench.search.hidden"), "health recognizes a declared nested TOML key")
++assert(translator.is_supported_path("editor.workbench.sidebar.views"), "health recognizes a declared TOML list as one atomic value")
++assert(not translator.is_supported_path("editor.workbench.search.unknown"), "health rejects unknown nested TOML keys")
++
++local workbench = require("workbench")
++assert(workbench.get_status().reason == "not_setup", "TOML translation alone does not initialize Workbench")
++local invalid_resolved = translator.configure({ enable = true, sidebar = { width = 40, unsupported = true } })
++assert(invalid_resolved == false, "unknown TOML fields are rejected instead of passed through")
++assert(workbench.get_status().reason == "not_setup", "failed TOML validation leaves Workbench uninitialized")
++
++local resolvers = require("autoconf.sys.core.resolvers")
++require("autoconf.sys.resolvers.editor").register_editor_resolvers()
++require("autoconf.sys.core.resolution").resolve_configs(parsed)
++
++local status = workbench.get_status()
++assert(status.state == "enabled", "nested editor.workbench.enable activates the explicitly configured standalone feature")
++local function setting(path)
++  for _, item in ipairs(status.settings) do if item.path == path then return item end end
++end
++assert(setting("sidebar.width").effective == 40 and setting("sidebar.width").provenance == "autoconf.toml", "effective setting reports TOML provenance")
++assert(setting("search.hidden").effective == true and setting("search.hidden").provenance == "autoconf.toml", "true boolean setting reaches effective state")
++assert(setting("preview.enabled").effective == false, "false preview setting reaches effective state")
++assert(status.editor_settings.completion.available, "Autoconf completion adapter is registered")
++assert(status.editor_settings.formatting.available, "Autoconf formatting adapter is registered")
++assert(status.editor_settings.diagnostics.available, "Autoconf diagnostics adapter is registered on supported Neovim")
++
++local completion = require("autoconf.sys.resolvers.editor.completion")
++local formatting = require("autoconf.sys.resolvers.editor.formatting")
++local diagnostics = require("autoconf.sys.resolvers.editor.diagnostics")
++local foreign_group = vim.api.nvim_create_augroup("AutoconfWorkbenchSibling", { clear = true })
++vim.api.nvim_create_autocmd("BufWritePre", { group = foreign_group, callback = function() end })
++local foreign_before = #vim.api.nvim_get_autocmds({ event = "BufWritePre", group = foreign_group })
++
++assert(workbench.execute("settings.toggle_completion", { enabled = false }).ok, "completion action applies an explicit false")
++assert(completion.status().requested.auto_completion == false, "completion requested state reflects live adapter action")
++assert(completion.blink_options().enabled() == false, "Blink's dynamic effective option reflects the action")
++assert(workbench.execute("settings.toggle_formatting", { enabled = true }).ok, "format action installs the Autoconf-owned hook")
++assert(formatting.auto_format_status().requested and formatting.auto_format_status().effective, "formatting status reports requested/effective hook state")
++assert(workbench.execute("settings.toggle_diagnostics", { enabled = true }).ok, "diagnostics action applies a live setting")
++assert(diagnostics.inline_diagnostics_status().effective, "diagnostics getter reads the active Neovim configuration")
++assert(vim.diagnostic.config().virtual_lines == true, "diagnostics action changes the real Neovim setting")
++assert(#vim.api.nvim_get_autocmds({ event = "BufWritePre", group = foreign_group }) == foreign_before, "formatting toggle preserves a sibling save hook")
++
++-- Resolver reapplication replaces its adapter registrations instead of stacking
++-- duplicate actions/resources, and does not undo a live action override.
++require("autoconf.sys.core.resolution").resolve_configs(parsed)
++local repeated = workbench.get_status()
++local adapter_resources = 0
++for _, resource in ipairs(repeated.resources.resources) do
++  if resource.label:match("^setting%-adapter:") then adapter_resources = adapter_resources + 1 end
++end
++assert(adapter_resources == 3, "repeated TOML setup retains exactly one registration per host adapter")
++assert(completion.status().requested.auto_completion == false, "re-registering adapters preserves live host state")
++assert(#vim.api.nvim_get_autocmds({ event = "BufWritePre", group = foreign_group }) == foreign_before, "repeated setup leaves sibling save hooks intact")
++
++require("autoconf.sys.core.resolution").resolve_configs({ editor = { workbench = { enable = true } } })
++local reset = workbench.get_status()
++local reset_settings = {}
++for _, item in ipairs(reset.settings) do reset_settings[item.path] = item end
++assert(reset_settings["search.hidden"].effective == false and reset_settings["search.hidden"].provenance == "default",
++  "replacing the TOML source clears omitted keys and restores their default provenance")
++assert(reset_settings["sidebar.width"].effective == 32 and reset_settings["preview.enabled"].effective == true,
++  "replacing the TOML source restores omitted values to defaults")
++require("autoconf.sys.core.resolution").resolve_configs(parsed)
++
++-- An invalid nested field is rejected without changing the last valid settings.
++local before_invalid = workbench.get_status()
++require("autoconf.sys.core.resolution").resolve_configs({ editor = { workbench = { search = { hidden = false, unknown = true } } } })
++local after_invalid = workbench.get_status()
++assert(after_invalid.state == before_invalid.state, "unknown TOML field cannot change enabled state")
++assert(setting("search.hidden").effective == true, "baseline parsed TOML was retained")
++local hidden_after = workbench.get_status().settings
++for _, item in ipairs(hidden_after) do
++  if item.path == "search.hidden" then assert(item.effective == true, "unknown config did not partially apply known siblings") end
++end
++
++-- Reset only the settings touched in this isolated process; no config file is
++-- written by a live action or by a TOML resolver.
++assert(workbench.execute("settings.toggle_completion", { enabled = true }).ok)
++assert(workbench.execute("settings.toggle_formatting", { enabled = false }).ok)
++assert(workbench.execute("settings.toggle_diagnostics", { enabled = false }).ok)
++assert(formatting.auto_format_status().effective == false, "formatting disable removes its owned hook")
++assert(#vim.api.nvim_get_autocmds({ event = "BufWritePre", group = foreign_group }) == foreign_before, "formatting disable still preserves sibling hook")
++assert(resolvers.has_resolver("editor.workbench"), "Autoconf registers the nested workbench resolver")
++
++print("autoconf workbench settings integration tests passed")

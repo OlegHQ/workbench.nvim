@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "task": "WB-25",
+  "revision": "Dirty nvim-config HEAD 64dceb4df6ac4d3e9b571146101c00947c143b12 with WB-25 changes to README.md, config.toml, init.lua, flake.nix and flake.lock; dirty workbench.nvim HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a with WB-25 public facade/runtime, tests and docs. Autoconf HEAD 5a87cf0b40b43705357db892a1b07a40d418363c and themekit HEAD d023de449b4d906154975b3d180cfff70f75ba3c retain prior dirty WB-19/WB-24 work; WB-25 made no edits in either plugin. The root flake lock now records the last published planning-only Workbench SHA, not this runtime. The separate nixos-config checkout is clean at dev 5cee912f61aa99704a888b8140690d8a465c52a6. No commits, pushes, publication or host activation were made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; minimum Neovim 0.11.7 and current/host Neovim 0.12.4; ripgrep 15.2.0; Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1; Nix 2.30.2. The actual nixos-config checkout is available locally; its optional WITH_NVIM=1 macOS system derivation built using an isolated local Workbench source override. Neovim/Nix remains opt-in, not the default. Linux was unavailable.",
+  "summary": "Added a lazy public Files/Search launcher and explicit :Workbench enable/disable/files/search/close commands. Workbench remains disabled by default; opening while disabled does not construct providers or enable it. The host maps Space W to Files and Space / to Search while preserving Space f, with mapping descriptions and lazy command resolvers. Actual host RPC-grid runs on both Neovim versions exercise Files enumeration, a real ripgrep query, rendered results, focus, disable cleanup and modified-buffer preservation at all four grids. Both optional Nix source-installation paths built with the local runtime staged as an override, and the configured macOS system derivation built under WITH_NVIM=1 without activation. WB-25 remains incomplete because the runtime is unpublished: the locked upstream input is still planning-only, so exact runtime pin parity, clean recursive install and rollout/activation evidence remain outstanding.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-25, changed repository paths and the Workbench runtime scope inventory",
+      "result": "Ownership validation passed for 39 Workbench Lua modules. The Workbench runtime owns and disposes the layout, Files/Search controllers, filesystem/ripgrep providers, result store and navigation service through one scope; it constructs them only on an enabled open. The host init uses lazy require closures and does not import controllers. WB-25 allowed paths were extended to include the missing public facade/runtime boundary and its runtime/E2E tests.",
+      "artifacts": [
+        "docs/tasks.json",
+        "docs/PLAN.md",
+        "docs/ARCHITECTURE.md",
+        "docs/CONTRACTS.md",
+        "lua/workbench/init.lua",
+        "lua/workbench/compose.lua",
+        "lua/workbench/runtime.lua",
+        "plugin/workbench.lua",
+        "tests/check_ownership.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; sh ../autoconf.nvim/tests/run.sh; make test-integration; make check-ownership; tests/e2e/wb25_host.py on minimum/current Neovim",
+      "result": "All 161 Workbench mini.test cases passed on Neovim 0.11.7 and 0.12.4, including the public host lifecycle test. Autoconf repair, Workbench settings-adapter and optional-dependency suites passed on both versions. All 21 Python integration/plan tests passed; planning structure and import ownership checks passed. The eight public host RPC-grid scenarios also passed.",
+      "artifacts": [
+        "tests/runtime/test_host_runtime.lua",
+        "tests/e2e/wb25_host.py",
+        "tests/e2e/driver.py",
+        ".test-output/e2e/wb25/local-160x50-74ba1e/result.json",
+        ".test-output/e2e/wb25/local-160x50-7cbf6e/result.json"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; tests/e2e/wb25_host.py --grid-sizes 160x50,120x35,80x24,60x20 on both Neovim versions",
+      "result": "The public-runtime test verifies that pre-setup and explicitly disabled opens return structured errors without constructing runtime resources; three enable/open/disable cycles leave Workbench disabled with runtime nil. Each real-grid host run opens both views then disables them, restores the original editor window/buffer, and preserves modified user text. The internal suite passed its cancellation, stale-result and resource-disposal cases.",
+      "artifacts": [
+        "tests/runtime/test_host_runtime.lua",
+        ".test-output/e2e/wb25/local-120x35-eb7b85/result.json",
+        ".test-output/e2e/wb25/local-120x35-51a063/result.json",
+        ".test-output/e2e/wb25/local-80x24-d6ba82/result.json",
+        ".test-output/e2e/wb25/local-80x24-79e103/result.json",
+        ".test-output/e2e/wb25/local-60x20-9bf9f8/result.json",
+        ".test-output/e2e/wb25/local-60x20-2b13d8/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb25_host.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim nvim; repeat with --nvim .test-deps/neovim-0.11.7/bin/nvim",
+      "result": "All four actual terminal grids passed on both versions. Space W visibly opens Files and enumerates note.txt; Space / opens Search, actual /needle input returns one real ripgrep match in the rendered Search buffer, and Search retains focus. The 60x20 overlay works. Space f remains mapped; Space / deliberately replaces the prior global-search binding.",
+      "artifacts": [
+        ".test-output/e2e/wb25/local-160x50-74ba1e/screen.txt",
+        ".test-output/e2e/wb25/local-120x35-eb7b85/screen.txt",
+        ".test-output/e2e/wb25/local-80x24-d6ba82/screen.txt",
+        ".test-output/e2e/wb25/local-60x20-9bf9f8/screen.txt",
+        ".test-output/e2e/wb25/local-160x50-7cbf6e/screen.txt",
+        ".test-output/e2e/wb25/local-120x35-51a063/screen.txt",
+        ".test-output/e2e/wb25/local-80x24-79e103/screen.txt",
+        ".test-output/e2e/wb25/local-60x20-2b13d8/screen.txt"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim; inspect WB-25 host E2E timing records",
+      "result": "Twenty interleaved warm host/plugin-free pairs measured host startup marker p50/p95 42.477/43.171 ms, process wall 62.349/63.632 ms and first UI frame 58.624/61.763 ms, all below the 150 ms startup budget. Across the latest eight actual-grid Workbench runs, Space W to first visible flush measured 53.262–63.188 ms, including live provider work at all four terminal sizes. The dormant Workbench startup profile remains covered by the E2E checks and does not construct its runtime/providers.",
+      "artifacts": [
+        ".bench-output/startup/20260913T074053Z-baseline-a4710b/baseline.json",
+        ".test-output/e2e/wb25/local-160x50-74ba1e/result.json",
+        ".test-output/e2e/wb25/local-120x35-eb7b85/result.json",
+        ".test-output/e2e/wb25/local-80x24-d6ba82/result.json",
+        ".test-output/e2e/wb25/local-60x20-9bf9f8/result.json",
+        "docs/evidence/WB-10.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; sh ../autoconf.nvim/tests/run.sh; make test-integration; make test-ui NVIM_CURRENT=nvim; nix build .#nvimconf --no-link with a staged local Workbench override; WITH_NVIM=1 NIXPKGS_ALLOW_UNFREE=1 nix build .#darwinConfigurations.mac.system --no-link --impure with staged local nvim-config and Workbench overrides",
+      "result": "Minimum/current Neovim, standalone runtime, Autoconf settings adapter, optional-dependency, integration, UI and ownership tests passed. Both the standalone package and the actual macOS Home Manager/system source-installation path built with the unpublished local Workbench runtime supplied through an isolated override. This verifies the opt-in WITH_NVIM=1 path only; normal/default Neovim remains non-Nix and Workbench remains disabled until explicitly enabled. The checked-in lock still points at the published planning-only Workbench SHA. The persistent Ubuntu 24.04 VM is running but Multipass guest execution fails with no route; Linux compatibility remains unverified.",
+      "artifacts": [
+        "tests/runtime/test_host_runtime.lua",
+        "tests/e2e/wb25_host.py",
+        "docs/evidence/WB-25-nix-build.md",
+        "docs/evidence/WB-25-release-audit.md"
+      ]
+    },
+    {
+      "id": "G7",
+      "status": "skip",
+      "command": "git ls-remote --symref git@github.com:OlegHQ/workbench.nvim.git HEAD 'refs/heads/*' 'refs/tags/*'; git ls-remote --symref git@github.com:OlegHQ/nvim-config.git HEAD refs/heads/dev; inspect local Nix lock, recursive-clone parity and activation state",
+      "result": "The opt-in Nix standalone and configured macOS system builds passed only with the local unpublished runtime supplied via path overrides. The checked-in flake.lock resolves Workbench to published planning-only SHA 0534135d877ec3679bb91ee0b4a68b71e174ff7a, so it is not runtime-parity evidence. The Workbench runtime remains dirty and no commits, pushes or publication were authorized; a clean recursive clone cannot include it. Host activation was not authorized and was not run. Next gate requires publication/pinning of the runtime and parent gitlink, fresh-clone parity validation, and a separately authorized activation/rollback walkthrough. Neovim's Nix path is optional via WITH_NVIM=1 and is not the default host setup.",
+      "artifacts": [
+        "docs/evidence/WB-25-release-audit.md",
+        "docs/evidence/WB-25-nix-build.md"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "task": "WB-09",
+  "revision": "Dirty workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a; the WB-09-owned source, test, and benchmark files are captured in docs/evidence/WB-09.diff. Not committed or published.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; ripgrep 15.2.0 (e89fff89ac); Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1. Search benchmarks used the normal tier generated with seed 20260912. Host startup paired against the prior WB-08 baseline; no Linux run was available in this task environment.",
+  "summary": "Implemented a standalone structured asynchronous ripgrep provider using argv-based vim.system execution, explicit workspace/folder scope and policy, incremental JSONL decoding, raw-byte locations/payloads, deterministic batches, bounded stderr/output/results, scoped cancellation, and typed complete/partial/error states. Hidden and ignored policies remain independent, project ignore behavior matches Files, and symlink traversal policies the provider cannot reproduce are reported unsupported. Search deliberately reports partial completion at configured limits. No provider is eagerly loaded by startup and no host, theme, Nix, or runtime dependency wiring was changed.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; git diff --check; review WB-09 source imports and scope ownership",
+      "result": "Ownership validation passed for all 19 Lua modules. The new provider imports only core Scope, Resource, Location, and RootPolicy modules; it owns each process, parser queue, batch, stderr capture, and scheduled drain through an idempotent request scope. Disposal cancels callbacks/processes and clears retained callback, query, root, batch, and stderr references. WB-09 code and tests stay under lua/workbench/providers/ and tests/; performance probes stay under bench/. Task/evidence bookkeeping is in the implicit docs paths. No UI/controller, startup, autoconf, theme, Nix, or third-party dependency code changed.",
+      "artifacts": [
+        "docs/evidence/WB-09.diff",
+        "lua/workbench/providers/rg.lua",
+        "tests/runtime/test_rg_provider.lua",
+        "tests/check_ownership.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration; python3 scripts/check_plan.py",
+      "result": "All 65 mini.test cases passed on both Neovim 0.11.7 and 0.12.4; 14 provider cases include real rg policy/query/Unicode/non-UTF-8/large-line behavior, split JSON chunks, structured errors, limits, explicit and symlink-safe scopes, and cancellation. The 21 Python integration/plan tests passed. Real rg confirmed newline filenames and byte ranges, leading-dash arguments, invalid-regex errors, no-match completion, .gitignore/.ignore behavior, hidden glob policy, base64 bytes, and bounded oversized-line truncation.",
+      "artifacts": [
+        "tests/runtime/test_rg_provider.lua",
+        "tests/runtime/run.lua",
+        "tests/test_plan.py",
+        "scripts/check_plan.py",
+        ".bench-output/fixtures/normal-20260912T182214Z-455389/fixture.json"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; bench/measure_rg_provider.py --nvim <minimum/current Neovim> --fixture .bench-output/fixtures/normal-20260912T182214Z-455389 --repetitions 20",
+      "result": "A staged parser callback followed by session supersession was canceled before execution; a late stdout/on-exit callback after cancellation emitted no stale batch. Reentrant cancellation stopped remaining submatches in the same JSON record. One hundred repeated fake-process cancellations left every request scope with zero resources and pending callbacks, and left the provider with zero active requests. Twenty real local ripgrep processes were canceled and observed through process exit per Neovim version; cancellation-to-exit p95 was 0.0957 ms on 0.11.7 and 0.0819 ms on 0.12.4. Owned process cleanup and stale-result rejection passed without foreign resources.",
+      "artifacts": [
+        "tests/runtime/test_rg_provider.lua",
+        ".bench-output/rg/wb09-nvim-0.11.7-final-2.json",
+        ".bench-output/rg/wb09-nvim-0.12.4-final-2.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python bench/measure_rg_provider.py --nvim <0.11.7 and 0.12.4> --fixture .bench-output/fixtures/normal-20260912T182214Z-455389 --repetitions 20; .test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim",
+      "result": "On the seed-20260912 normal fixture (10,000 files, 20,480,000 content bytes, warm filesystem, no debounce): first-batch p50/p95 was 7.149/9.187 ms on Neovim 0.11.7 and 7.529/8.598 ms on 0.12.4, below the 150 ms p95 target. Completion p50/p95 was 253.617/257.384 ms and 273.051/284.130 ms; all runs correctly reported partial at the default 8 MiB accounted-result limit, retaining at most 9,866 items / 8,388,550 accounted bytes. Peak pending parser output was 7,840 / 65,053 bytes; sampled combined Neovim+rg RSS peak was 18,288 / 19,296 KiB at 100 ms intervals. Cancellation-to-exit p95 remained below 0.1 ms. A fresh 20-pair host startup profile measured 43.745 ms p50 / 44.236 ms p95 versus 43.515 / 44.505 ms in the WB-08 run; median change was +0.230 ms, well under the 10 ms investigation threshold and 150 ms startup budget. No workbench provider module appeared in host startup profile rows over 5 ms. First UI frame and first input-state p95 were 58.739 ms and 1.905 ms in the generic harness probe.",
+      "artifacts": [
+        "bench/rg_provider.lua",
+        "bench/measure_rg_provider.py",
+        ".bench-output/rg/wb09-nvim-0.11.7-final-2.json",
+        ".bench-output/rg/wb09-nvim-0.12.4-final-2.json",
+        ".bench-output/startup/20260912T183450Z-baseline-671cff/baseline.json",
+        ".bench-output/startup/20260912T174622Z-baseline-d4814f/baseline.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test; nvim --headless -n -i NONE -c \"lua local provider=assert(require('workbench.providers.rg').new()); assert(provider:capabilities().state=='ready'); assert(provider:dispose())\" -c 'qa!'",
+      "result": "Minimum and current Neovim runtimes both pass all provider behavior in isolated --clean child instances. Missing ripgrep is handled explicitly: capability state is unavailable, empty query does not spawn, and non-empty search returns missing_dependency; unsupported symlink policies also fail closed. The current host Neovim stack loaded the provider from its configured runtimepath and reported ready with the installed ripgrep. Theme/Nix checks were not applicable because those surfaces were not changed. Linux was not available locally and remains a separate platform-validation item for the broader release; this task's minimum/current and host-runtime checks passed on macOS.",
+      "artifacts": [
+        "tests/runtime/test_rg_provider.lua",
+        ".bench-output/startup/20260912T183450Z-baseline-671cff/baseline.json"
+      ]
+    }
+  ]
+}

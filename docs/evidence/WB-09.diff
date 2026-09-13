@@ -1,0 +1,1742 @@
+diff --git a/lua/workbench/providers/rg.lua b/lua/workbench/providers/rg.lua
+new file mode 100644
+index 0000000..420ca46
+--- /dev/null
++++ b/lua/workbench/providers/rg.lua
+@@ -0,0 +1,968 @@
++local Scope = require("workbench.core.scope")
++local Resource = require("workbench.core.resource")
++local Location = require("workbench.core.location")
++local RootPolicy = require("workbench.core.root_policy")
++
++local M = {}
++local Provider = {}
++Provider.__index = Provider
++
++local MiB = 1024 * 1024
++local DEFAULTS = {
++  max_active_requests = 8,
++  max_concurrent_per_workspace = 2,
++  max_query_bytes = 4096,
++  max_globs = 128,
++  max_glob_bytes = 4096,
++  max_json_line_bytes = 1024 * 1024,
++  max_pending_output_bytes = 1024 * 1024,
++  max_output_bytes = 64 * MiB,
++  max_stderr_bytes = 64 * 1024,
++  max_error_bytes = 2048,
++  max_snippet_bytes = 4096,
++  max_match_bytes = 4096,
++  max_submatches_per_line = 256,
++  max_items = 10000,
++  max_result_bytes = 8 * MiB,
++  max_batch_items = 128,
++  max_batch_bytes = 128 * 1024,
++  max_messages_per_slice = 128,
++  max_slice_ms = 4,
++  timeout_ms = 30000,
++}
++
++local HARD_MAX = {
++  max_active_requests = 8,
++  max_concurrent_per_workspace = 2,
++  max_query_bytes = 64 * 1024,
++  max_globs = 256,
++  max_glob_bytes = 16 * 1024,
++  max_json_line_bytes = 4 * MiB,
++  max_pending_output_bytes = 4 * MiB,
++  max_output_bytes = 128 * MiB,
++  max_stderr_bytes = 256 * 1024,
++  max_error_bytes = 8192,
++  max_snippet_bytes = 16 * 1024,
++  max_match_bytes = 16 * 1024,
++  max_submatches_per_line = 1024,
++  max_items = 10000,
++  max_result_bytes = 16 * MiB,
++  max_batch_items = 512,
++  max_batch_bytes = 512 * 1024,
++  max_messages_per_slice = 512,
++  max_slice_ms = 16,
++  timeout_ms = 10 * 60 * 1000,
++}
++
++local function error_value(code, message, retryable, extra)
++  local result = { code = code, message = message, retryable = retryable == true }
++  if type(extra) == "table" then
++    for key, value in pairs(extra) do result[key] = value end
++  end
++  return result
++end
++
++local function is_integer(value, minimum)
++  return type(value) == "number" and value % 1 == 0 and value >= (minimum or 0)
++end
++
++local function bounded_option(opts, name)
++  local value = opts[name]
++  if value == nil then return DEFAULTS[name] end
++  if not is_integer(value, 1) then return nil, name .. " must be a positive integer" end
++  return math.min(value, HARD_MAX[name])
++end
++
++local function dense_strings(value, name, max_count, max_item_bytes)
++  if type(value) ~= "table" then return nil, name .. " must be a string array" end
++  local count, maximum = 0, 0
++  for key, item in pairs(value) do
++    if not is_integer(key, 1) then return nil, name .. " must be a dense string array" end
++    if type(item) ~= "string" or item == "" or item:find("\0", 1, true) then
++      return nil, name .. " contains an invalid pattern"
++    end
++    if #item > max_item_bytes then return nil, name .. " pattern exceeds its byte limit" end
++    count, maximum = count + 1, math.max(maximum, key)
++  end
++  if count ~= maximum then return nil, name .. " must be a dense string array" end
++  if count > max_count then return nil, name .. " exceeds its pattern count limit" end
++  return value
++end
++
++local function validate_search_directories(root, scope_path, relative)
++  local uv = vim.uv or vim.loop
++  local function check(path)
++    local stat = uv.fs_lstat(path)
++    if not stat then return nil, error_value("scope_unavailable", "search root or folder is missing or inaccessible", true) end
++    if stat.type == "link" then
++      return nil, error_value("symlink_scope_unsupported", "search scope cannot be a symlink when symlink traversal is disabled")
++    end
++    if stat.type ~= "directory" then
++      return nil, error_value("invalid_scope", "search root and folder scopes must be directories")
++    end
++    return true
++  end
++
++  local valid, err = check(root)
++  if not valid then return nil, err end
++  if relative == "." then return true end
++  local current = root
++  for component in relative:gmatch("[^/\\]+") do
++    current = vim.fs.joinpath(current, component)
++    valid, err = check(current)
++    if not valid then return nil, err end
++  end
++  if vim.fs.normalize(current) ~= vim.fs.normalize(scope_path) then
++    return nil, error_value("invalid_scope", "folder scope path could not be resolved component by component")
++  end
++  return true
++end
++
++local function decode_raw(value, label)
++  if type(value) ~= "table" then return nil, label .. " must be a ripgrep text/bytes object" end
++  if type(value.text) == "string" and value.bytes == nil then return value.text end
++  if type(value.bytes) == "string" and value.text == nil then
++    local ok, decoded = pcall(vim.base64.decode, value.bytes)
++    if ok and type(decoded) == "string" then return decoded end
++    return nil, label .. " contains invalid base64 bytes"
++  end
++  return nil, label .. " must contain exactly one text or bytes field"
++end
++
++local function trim_line_ending(value)
++  if value:sub(-1) == "\n" then value = value:sub(1, -2) end
++  if value:sub(-1) == "\r" then value = value:sub(1, -2) end
++  return value
++end
++
++local function excerpt(value, start, cap)
++  if #value <= cap then return value end
++  local before = math.floor(cap / 2)
++  local first = math.max(1, math.min(start - before, #value - cap + 1))
++  local last = math.min(#value, first + cap - 1)
++  local result = value:sub(first, last)
++  if first > 1 then result = "…" .. result end
++  if last < #value then result = result .. "…" end
++  return result
++end
++
++local function normalize_request(request, limits)
++  if type(request) ~= "table" then return nil, error_value("invalid_request", "search request must be a table") end
++  local workspace = request.workspace
++  if type(workspace) ~= "table" or type(workspace.id) ~= "string" or workspace.id == ""
++    or not is_integer(workspace.generation, 1) or type(workspace.roots) ~= "table" then
++    return nil, error_value("workspace_unavailable", "a current workspace snapshot is required", true)
++  end
++  if #workspace.roots ~= 1 then
++    return nil, error_value("unsupported_workspace", "ripgrep currently supports one explicit workspace root", false)
++  end
++  local root = workspace.roots[1]
++  if type(root) ~= "table" or root.scheme ~= "file" or type(root.path) ~= "string" then
++    return nil, error_value("workspace_unavailable", "workspace root must be a file resource with a native path")
++  end
++  local normalized_root, root_err = Resource.normalize_absolute_path(root.path)
++  if not normalized_root then return nil, error_value("invalid_workspace_root", root_err) end
++
++  local scope = request.scope or workspace.scope
++  if type(scope) ~= "table" or scope.explicit ~= true then
++    return nil, error_value("scope_required", "search requires an explicit all-roots or folder scope")
++  end
++  local scope_path = normalized_root
++  if scope.kind == "folder" then
++    scope_path = scope.path or (type(scope.resource) == "table" and scope.resource.path)
++    if type(scope_path) ~= "string" then return nil, error_value("invalid_scope", "folder scope requires a native path") end
++    local normalized, normalize_err = Resource.normalize_absolute_path(scope_path)
++    if not normalized then return nil, error_value("invalid_scope", normalize_err) end
++    scope_path = normalized
++  elseif scope.kind ~= "all_roots" then
++    return nil, error_value("invalid_scope", "scope kind must be all_roots or folder")
++  end
++  local inside, contains_err = RootPolicy.contains(normalized_root, scope_path)
++  if not inside then return nil, error_value("outside_root", contains_err or "search scope lies outside the workspace root") end
++
++  local policy = workspace.policy
++  if type(policy) ~= "table" then return nil, error_value("policy_unavailable", "workspace search policy is unavailable") end
++  local hidden = policy.hidden or "exclude"
++  local ignored = policy.ignored or "exclude"
++  local symlinks = policy.symlinks or "never"
++  if (hidden ~= "include" and hidden ~= "exclude") or (ignored ~= "include" and ignored ~= "exclude") then
++    return nil, error_value("policy_unsupported", "workspace hidden/ignored policy is unsupported")
++  end
++  if symlinks ~= "never" then
++    return nil, error_value("symlink_policy_unsupported", "search cannot safely traverse symlinks under the current workspace policy")
++  end
++  local includes, include_err = dense_strings(policy.include or {}, "include globs", limits.max_globs, limits.max_glob_bytes)
++  if not includes then return nil, error_value("invalid_policy", include_err) end
++  local excludes, exclude_err = dense_strings(policy.exclude or {}, "exclude globs", limits.max_globs, limits.max_glob_bytes)
++  if not excludes then return nil, error_value("invalid_policy", exclude_err) end
++
++  local query = request.query
++  if type(query) ~= "string" then return nil, error_value("invalid_query", "search query must be a string") end
++  if #query > limits.max_query_bytes then return nil, error_value("query_too_large", "search query exceeds its byte limit") end
++  if query:find("\0", 1, true) then return nil, error_value("invalid_query", "search query cannot contain NUL bytes") end
++  if query:find("\n", 1, true) or query:find("\r", 1, true) then
++    return nil, error_value("multiline_unsupported", "multiline search patterns are not supported by this provider")
++  end
++  local generation = request.generation
++  if not is_integer(generation, 1) then return nil, error_value("invalid_generation", "search generation must be a positive integer") end
++  local session_id = request.session_id or "default"
++  if type(session_id) ~= "string" or session_id == "" or #session_id > 128 then
++    return nil, error_value("invalid_session", "search session ID must be a non-empty string of at most 128 bytes")
++  end
++  local flags = request.flags or {}
++  if type(flags) ~= "table" then return nil, error_value("invalid_flags", "search flags must be a table") end
++  local case = flags.case or "smart"
++  if case ~= "smart" and case ~= "sensitive" and case ~= "insensitive" then
++    return nil, error_value("invalid_flags", "case must be smart, sensitive, or insensitive")
++  end
++  for _, flag in ipairs({ "fixed", "word" }) do
++    if flags[flag] ~= nil and type(flags[flag]) ~= "boolean" then
++      return nil, error_value("invalid_flags", flag .. " must be boolean")
++    end
++  end
++
++  local relative = vim.fs.relpath(normalized_root, scope_path)
++  if relative == nil then return nil, error_value("outside_root", "search scope cannot be made relative to the workspace root") end
++  if relative == "." then relative = "." end
++  local valid_scope, scope_err = validate_search_directories(normalized_root, scope_path, relative)
++  if not valid_scope then return nil, scope_err end
++  return {
++    workspace = workspace,
++    workspace_id = workspace.id,
++    workspace_generation = workspace.generation,
++    root = normalized_root,
++    scope_path = scope_path,
++    relative_scope = relative,
++    policy = policy,
++    include = includes,
++    exclude = excludes,
++    query = query,
++    flags = { case = case, fixed = flags.fixed == true, word = flags.word == true },
++    generation = generation,
++    session_id = session_id,
++  }
++end
++
++local function command_for(executable, normalized)
++  local argv = {
++    executable,
++    "--json",
++    "--line-number",
++    "--column",
++    "--sort",
++    "path",
++    "--no-config",
++    "--no-require-git",
++    "--no-ignore-global",
++    "--no-ignore-exclude",
++  }
++  if normalized.policy.hidden == "include" then argv[#argv + 1] = "--hidden" end
++  if normalized.policy.ignored == "include" then argv[#argv + 1] = "--no-ignore" end
++  if normalized.flags.case == "smart" then argv[#argv + 1] = "--smart-case"
++  elseif normalized.flags.case == "sensitive" then argv[#argv + 1] = "--case-sensitive"
++  else argv[#argv + 1] = "--ignore-case" end
++  if normalized.flags.fixed then argv[#argv + 1] = "--fixed-strings" end
++  if normalized.flags.word then argv[#argv + 1] = "--word-regexp" end
++  for _, pattern in ipairs(normalized.include) do
++    argv[#argv + 1] = "--glob"
++    argv[#argv + 1] = pattern
++  end
++  for _, pattern in ipairs(normalized.exclude) do
++    argv[#argv + 1] = "--glob"
++    argv[#argv + 1] = "!" .. pattern
++  end
++  if normalized.policy.hidden == "exclude" then
++    -- CLI glob inclusions can opt hidden paths back in, so reassert the
++    -- independent hidden policy after user patterns (including dot-directories).
++    for _, pattern in ipairs({ "!.*", "!**/.*", "!**/.*/**" }) do
++      argv[#argv + 1] = "--glob"
++      argv[#argv + 1] = pattern
++    end
++  end
++  -- Files deliberately never treats .git metadata as workspace source, even
++  -- when hidden files are included or ignore files are disabled.
++  argv[#argv + 1] = "--glob"
++  argv[#argv + 1] = "!**/.git/**"
++  argv[#argv + 1] = "--glob"
++  argv[#argv + 1] = "!/.git/"
++  argv[#argv + 1] = "-e"
++  argv[#argv + 1] = normalized.query
++  argv[#argv + 1] = "--"
++  argv[#argv + 1] = normalized.relative_scope
++  return argv
++end
++
++local function session_key(workspace_id, session_id)
++  return workspace_id .. "\0" .. session_id
++end
++
++local function escaped_message(value, limit)
++  local safe = Resource.escape_display(tostring(value or "")):gsub("%s+", " ")
++  if #safe > limit then safe = safe:sub(1, limit - 3) .. "..." end
++  return safe
++end
++
++function M.new(opts)
++  opts = opts or {}
++  if type(opts) ~= "table" then return nil, "ripgrep provider options must be a table" end
++  local limits = {}
++  for name in pairs(DEFAULTS) do
++    local value, err = bounded_option(opts, name)
++    if not value then return nil, err end
++    limits[name] = value
++  end
++  if limits.max_concurrent_per_workspace > limits.max_active_requests then
++    return nil, "per-workspace concurrency cannot exceed total active request capacity"
++  end
++  if limits.max_batch_bytes > limits.max_result_bytes then limits.max_batch_bytes = limits.max_result_bytes end
++  if opts.system ~= nil and type(opts.system) ~= "function" then return nil, "system must be a function" end
++  if opts.executable ~= nil and type(opts.executable) ~= "function" then return nil, "executable must be a function" end
++  return setmetatable({
++    limits = limits,
++    system = opts.system or vim.system,
++    executable = opts.executable or function(name) return vim.fn.exepath(name) end,
++    scope = Scope.new("workbench-rg-provider"),
++    requests = {},
++    sessions = {},
++    next_request = 0,
++    disposed = false,
++  }, Provider)
++end
++
++function Provider:_live()
++  if self.disposed or not self.scope.alive then
++    return nil, error_value("provider_disposed", "ripgrep provider is disposed")
++  end
++  return true
++end
++
++function Provider:_executable()
++  local ok, executable = pcall(self.executable, "rg")
++  if not ok or type(executable) ~= "string" or executable == "" then return nil end
++  return executable
++end
++
++function Provider:capabilities(context)
++  local live = self:_live()
++  if not live then return { state = "unsupported", reason = "provider_disposed", operations = {} } end
++  if type(context) == "table" and context.workspace ~= nil then
++    local roots = type(context.workspace) == "table" and context.workspace.roots or nil
++    if type(roots) ~= "table" or #roots ~= 1 then
++      return { state = "unsupported", reason = "multi_root_execution_not_implemented", operations = {} }
++    end
++  end
++  if not self:_executable() then
++    return { state = "unavailable", reason = "ripgrep executable 'rg' was not found on PATH", operations = {} }
++  end
++  if type(context) == "table" and type(context.workspace) == "table"
++    and context.workspace.policy and context.workspace.policy.symlinks and context.workspace.policy.symlinks ~= "never" then
++    return { state = "unsupported", reason = "symlink_policy_unsupported", operations = {} }
++  end
++  return { state = "ready", operations = { "search" } }
++end
++
++function Provider:_emit(request, event)
++  if not request.active then return false end
++  event.generation = request.generation
++  event.request_id = request.id
++  event.workspace_id = request.workspace_id
++  event.workspace_generation = request.workspace_generation
++  local ok, err = pcall(request.sink, event)
++  if not ok then
++    request.sink_error = tostring(err)
++    request.scope:_record_error("ripgrep sink", err)
++    request.scope:dispose()
++    return nil
++  end
++  return true
++end
++
++function Provider:_remove(request)
++  request.active = false
++  self.requests[request.id] = nil
++  if self.sessions[request.key] == request then self.sessions[request.key] = nil end
++end
++
++function Provider:_terminate(request)
++  local process = request.process
++  if process then pcall(process.kill, process, "sigterm") end
++end
++
++function Provider:_clear_input(request)
++  request.chunks = {}
++  request.chunk_head = 1
++  request.chunk_tail = 0
++  request.queue_bytes = 0
++  request.current_chunk = nil
++  request.current_offset = 1
++  request.json_tail = ""
++  request.pending_limit = nil
++end
++
++function Provider:_flush_batch(request)
++  if #request.batch == 0 then return true end
++  local items = request.batch
++  request.batch = {}
++  request.batch_bytes = 0
++  return self:_emit(request, { kind = "batch", items = items })
++end
++
++function Provider:_mark_truncated(request, code, message)
++  if request.limit_reason or not request.active then return false end
++  request.limit_reason = code
++  request.accept_output = false
++  self:_flush_batch(request)
++  self:_emit(request, {
++    kind = "status",
++    status = "partial",
++    completeness = "truncated",
++    reason = code,
++    message = message,
++    item_count = request.item_count,
++  })
++  self:_clear_input(request)
++  self:_terminate(request)
++  return true
++end
++
++function Provider:_fail_parse(request, code, message)
++  if request.parse_error or not request.active then return false end
++  request.parse_error = error_value(code, message, false, { partial = request.item_count > 0 })
++  request.accept_output = false
++  self:_flush_batch(request)
++  self:_clear_input(request)
++  self:_terminate(request)
++  return true
++end
++
++function Provider:_add_item(request, item, accounted_bytes)
++  if not request.active then return false end
++  if request.item_count >= self.limits.max_items then
++    return self:_mark_truncated(request, "result_count_limit", "search results reached the configured item limit")
++  end
++  if request.result_bytes + accounted_bytes > self.limits.max_result_bytes then
++    return self:_mark_truncated(request, "result_byte_limit", "search results reached the configured byte limit")
++  end
++  if accounted_bytes > self.limits.max_batch_bytes then
++    return self:_mark_truncated(request, "item_batch_limit", "a single search result exceeded the configured batch byte limit")
++  end
++  if #request.batch >= self.limits.max_batch_items or request.batch_bytes + accounted_bytes > self.limits.max_batch_bytes then
++    if not self:_flush_batch(request) then return false end
++  end
++  request.batch[#request.batch + 1] = item
++  request.batch_bytes = request.batch_bytes + accounted_bytes
++  request.item_count = request.item_count + 1
++  request.result_bytes = request.result_bytes + accounted_bytes
++  if #request.batch >= self.limits.max_batch_items or request.batch_bytes >= self.limits.max_batch_bytes then
++    return self:_flush_batch(request)
++  end
++  return true
++end
++
++function Provider:_match_message(request, data)
++  if type(data) ~= "table" or not is_integer(data.line_number, 1) or type(data.path) ~= "table"
++    or type(data.lines) ~= "table" or type(data.submatches) ~= "table" then
++    return self:_fail_parse(request, "invalid_match_record", "ripgrep emitted a malformed match record")
++  end
++  local submatch_count, max_index = 0, 0
++  for key in pairs(data.submatches) do
++    if not is_integer(key, 1) then return self:_fail_parse(request, "invalid_match_record", "ripgrep submatches were not a dense array") end
++    submatch_count, max_index = submatch_count + 1, math.max(max_index, key)
++  end
++  if submatch_count ~= max_index then return self:_fail_parse(request, "invalid_match_record", "ripgrep submatches were not a dense array") end
++  if submatch_count > self.limits.max_submatches_per_line then
++    self:_mark_truncated(request, "submatch_limit", "a result line exceeded the submatch limit")
++    return false
++  end
++
++  local raw_path, path_err = decode_raw(data.path, "match path")
++  if not raw_path then return self:_fail_parse(request, "invalid_match_path", path_err) end
++  local raw_line, line_err = decode_raw(data.lines, "match line")
++  if not raw_line then return self:_fail_parse(request, "invalid_match_line", line_err) end
++  local full_path = raw_path:sub(1, 1) == "/" and raw_path or vim.fs.joinpath(request.root, raw_path)
++  local normalized_path, normalize_err = Resource.normalize_absolute_path(full_path)
++  if not normalized_path then return self:_fail_parse(request, "invalid_match_path", normalize_err) end
++  local inside, contains_err = RootPolicy.contains(request.root, normalized_path)
++  if not inside then return self:_fail_parse(request, "path_outside_root", contains_err or "ripgrep returned a path outside the workspace") end
++  local item_resource, resource_err = Resource.from_path(normalized_path, { workspace_id = request.workspace_id })
++  if not item_resource then return self:_fail_parse(request, "invalid_match_path", resource_err) end
++
++  local body = trim_line_ending(raw_line)
++  local display_path = item_resource.display_path
++  for index, submatch in ipairs(data.submatches) do
++    if not request.active then return false end
++    if type(submatch) ~= "table" or not is_integer(submatch.start, 0) or type(submatch.match) ~= "table" then
++      return self:_fail_parse(request, "invalid_submatch", "ripgrep emitted a malformed submatch")
++    end
++    local match_bytes, match_err = decode_raw(submatch.match, "submatch")
++    if not match_bytes then return self:_fail_parse(request, "invalid_submatch", match_err) end
++    if submatch.start > #body or submatch.start + #match_bytes > #body then
++      return self:_fail_parse(request, "invalid_submatch_range", "ripgrep byte range falls outside its reported line")
++    end
++    -- rg positions are byte offsets. Derive the exclusive end from the raw
++    -- submatch bytes instead of assuming Unicode codepoints are byte units.
++    local finish = submatch.start + #match_bytes
++    if submatch["end"] ~= nil and (not is_integer(submatch["end"], 0) or submatch["end"] ~= finish) then
++      return self:_fail_parse(request, "invalid_submatch_range", "ripgrep's reported byte range does not match its raw submatch bytes")
++    end
++    local location, location_err = Location.new(item_resource, {
++      range = {
++        start = { line = data.line_number - 1, character = submatch.start },
++        finish = { line = data.line_number - 1, character = finish },
++      },
++      encoding = "utf-8",
++    })
++    if not location then return self:_fail_parse(request, "invalid_location", location_err) end
++    local line_excerpt = excerpt(body, submatch.start + 1, self.limits.max_snippet_bytes)
++    local match_excerpt = #match_bytes > self.limits.max_match_bytes and match_bytes:sub(1, self.limits.max_match_bytes) or match_bytes
++    local label = Resource.escape_display(line_excerpt)
++    local detail = display_path .. ":" .. tostring(data.line_number)
++    local item = {
++      id = table.concat({ "rg", request.workspace_id, tostring(request.generation), item_resource.uri,
++        tostring(data.line_number), tostring(submatch.start), tostring(index) }, "\0"),
++      kind = "match",
++      label = label,
++      detail = detail,
++      location = location,
++      payload = {
++        provider_id = "rg",
++        raw_path = raw_path,
++        raw_line = body:sub(1, self.limits.max_snippet_bytes),
++        match_bytes = match_excerpt,
++        match_truncated = #match_bytes > #match_excerpt,
++        line_number = data.line_number,
++        byte_start = submatch.start,
++        byte_end = finish,
++        reported_byte_end = submatch["end"],
++        occurrence = index,
++      },
++    }
++    local size = #item.id + #item.label + #item.detail + #raw_path + #item.payload.raw_line + #match_excerpt + 160
++    if not self:_add_item(request, item, size) then return false end
++  end
++  return true
++end
++
++function Provider:_json_line(request, line)
++  if line == "" then return true end
++  if #line > self.limits.max_json_line_bytes then
++    self:_mark_truncated(request, "json_line_limit", "ripgrep output contained an oversized JSON record")
++    return false
++  end
++  local ok, message = pcall(vim.json.decode, line)
++  if not ok or type(message) ~= "table" or type(message.type) ~= "string" then
++    return self:_fail_parse(request, "invalid_json", "ripgrep emitted invalid JSON Lines output")
++  end
++  if message.type == "match" then
++    return self:_match_message(request, message.data)
++  elseif message.type == "summary" then
++    local stats = type(message.data) == "table" and message.data.stats or nil
++    if type(stats) == "table" then
++      request.stats = {
++        matches = is_integer(stats.matches, 0) and stats.matches or nil,
++        matched_lines = is_integer(stats.matched_lines, 0) and stats.matched_lines or nil,
++        searches = is_integer(stats.searches, 0) and stats.searches or nil,
++        searches_with_match = is_integer(stats.searches_with_match, 0) and stats.searches_with_match or nil,
++      }
++    end
++  elseif message.type ~= "begin" and message.type ~= "end" and message.type ~= "context" then
++    -- The JSON protocol may gain message types; unknown bounded records do
++    -- not affect the match model.
++    request.unknown_messages = request.unknown_messages + 1
++  end
++  return true
++end
++
++function Provider:_drain(request)
++  if not request.active or request.draining then return end
++  if request.limit_reason or request.parse_error then
++    if request.exit_result then self:_finish(request, request.exit_result) end
++    return
++  end
++  request.draining = true
++  if request.pending_limit then
++    local pending = request.pending_limit
++    request.pending_limit = nil
++    self:_mark_truncated(request, pending.code, pending.message)
++  end
++  local uv = vim.uv or vim.loop
++  local started = uv.hrtime()
++  local processed = 0
++  while request.active and processed < self.limits.max_messages_per_slice do
++    if not request.current_chunk then
++      if request.chunk_head > request.chunk_tail then break end
++      request.current_chunk = request.chunks[request.chunk_head]
++      request.chunks[request.chunk_head] = nil
++      request.chunk_head = request.chunk_head + 1
++      request.current_offset = 1
++      request.queue_bytes = math.max(0, request.queue_bytes - #request.current_chunk)
++    end
++    local chunk = request.current_chunk
++    local start = request.current_offset
++    local newline = chunk:find("\n", start, true)
++    if newline then
++      local fragment = chunk:sub(start, newline - 1)
++      local line = request.json_tail .. fragment
++      request.json_tail = ""
++      request.current_offset = newline + 1
++      if request.current_offset > #chunk then request.current_chunk = nil; request.current_offset = 1 end
++      if #line > self.limits.max_json_line_bytes then
++        self:_mark_truncated(request, "json_line_limit", "ripgrep output contained an oversized JSON record")
++        break
++      end
++      if not self:_json_line(request, line) then break end
++      processed = processed + 1
++    else
++      local fragment = chunk:sub(start)
++      request.json_tail = request.json_tail .. fragment
++      request.current_chunk = nil
++      request.current_offset = 1
++      if #request.json_tail > self.limits.max_json_line_bytes then
++        self:_mark_truncated(request, "json_line_limit", "ripgrep output contained an oversized JSON record")
++        break
++      end
++    end
++    if (uv.hrtime() - started) / 1000000 >= self.limits.max_slice_ms then break end
++  end
++  request.draining = false
++  if not request.active then return end
++  if request.limit_reason or request.parse_error then
++    self:_flush_batch(request)
++    if request.exit_result then self:_finish(request, request.exit_result) end
++  elseif request.chunk_head <= request.chunk_tail or request.current_chunk then
++    self:_schedule_drain(request)
++  elseif request.exit_result then
++    if #request.json_tail > 0 then
++      local tail = request.json_tail
++      request.json_tail = ""
++      if #tail > self.limits.max_json_line_bytes then
++        self:_mark_truncated(request, "json_line_limit", "ripgrep output contained an oversized JSON record")
++      elseif not self:_json_line(request, tail) then
++        request.parse_error = request.parse_error or error_value("invalid_json", "ripgrep emitted invalid trailing JSON Lines output", false)
++      end
++    end
++    self:_finish(request, request.exit_result)
++  end
++end
++
++function Provider:_schedule_drain(request)
++  if not request.active or request.drain_scheduled then return end
++  request.drain_scheduled = true
++  local ticket, schedule_err = request.scope:schedule(function()
++    request.drain_scheduled = false
++    request.drain_ticket = nil
++    self:_drain(request)
++  end)
++  if ticket then
++    request.drain_ticket = ticket
++  else
++    request.drain_scheduled = false
++    if request.active then
++      request.schedule_error = schedule_err and schedule_err.message or "could not schedule ripgrep output processing"
++      request.pending_limit = {
++        code = "schedule_failed",
++        message = escaped_message(request.schedule_error, self.limits.max_error_bytes),
++      }
++      request.accept_output = false
++      self:_terminate(request)
++    end
++  end
++end
++
++function Provider:_enqueue_stdout(request, read_error, data)
++  if not request.active or not request.accept_output then return end
++  if read_error then
++    request.stream_error = tostring(read_error)
++    request.accept_output = false
++    self:_terminate(request)
++    return
++  end
++  if type(data) ~= "string" or data == "" then return end
++  request.output_bytes = request.output_bytes + #data
++  if request.output_bytes > self.limits.max_output_bytes then
++    request.pending_limit = { code = "output_byte_limit", message = "ripgrep output exceeded the configured byte limit" }
++    request.accept_output = false
++    self:_terminate(request)
++    return self:_schedule_drain(request)
++  end
++  local pending = request.queue_bytes + (request.current_chunk and (#request.current_chunk - request.current_offset + 1) or 0) + #request.json_tail
++  if pending + #data > self.limits.max_pending_output_bytes then
++    request.pending_limit = { code = "output_queue_limit", message = "search output exceeded the bounded parser queue" }
++    request.accept_output = false
++    self:_terminate(request)
++    return self:_schedule_drain(request)
++  end
++  request.chunk_tail = request.chunk_tail + 1
++  request.chunks[request.chunk_tail] = data
++  request.queue_bytes = request.queue_bytes + #data
++  if request.chunk_head > 128 and request.chunk_head > request.chunk_tail / 2 then
++    local compact = {}
++    local count = 0
++    for index = request.chunk_head, request.chunk_tail do
++      count = count + 1
++      compact[count] = request.chunks[index]
++    end
++    request.chunks, request.chunk_head, request.chunk_tail = compact, 1, count
++  end
++  self:_schedule_drain(request)
++end
++
++function Provider:_append_stderr(request, read_error, data)
++  if not request.active then return end
++  if read_error then
++    request.stderr_read_error = tostring(read_error)
++    return
++  end
++  if type(data) ~= "string" or data == "" then return end
++  request.stderr_bytes = request.stderr_bytes + #data
++  local remaining = self.limits.max_stderr_bytes - #request.stderr
++  if remaining > 0 then request.stderr = request.stderr .. data:sub(1, remaining) end
++  if request.stderr_bytes > self.limits.max_stderr_bytes then request.stderr_truncated = true end
++end
++
++function Provider:_terminate_failure(request, code, message)
++  request.parse_error = error_value(code, message, false, { partial = request.item_count > 0 })
++  request.accept_output = false
++  self:_flush_batch(request)
++  self:_clear_input(request)
++  self:_terminate(request)
++end
++
++function Provider:_finish(request, result)
++  if not request.active or request.finished then return end
++  request.finished = true
++  if request.limit_reason then
++    self:_flush_batch(request)
++    self:_emit(request, {
++      kind = "done",
++      status = "partial",
++      completeness = "truncated",
++      total = request.item_count,
++      bytes = request.result_bytes,
++      limit_reason = request.limit_reason,
++      stats = request.stats,
++    })
++  elseif request.parse_error or request.stream_error then
++    self:_flush_batch(request)
++    local problem = request.parse_error or error_value("stdout_read_error", escaped_message(request.stream_error, self.limits.max_error_bytes), true)
++    self:_emit(request, { kind = "error", status = request.item_count > 0 and "partial" or "error", error = problem })
++  else
++    self:_flush_batch(request)
++    local code = type(result) == "table" and result.code or nil
++    local signal = type(result) == "table" and result.signal or 0
++    if code == 0 or code == 1 then
++      self:_emit(request, {
++        kind = "done",
++        status = "complete",
++        completeness = "complete",
++        total = request.item_count,
++        bytes = request.result_bytes,
++        stats = request.stats,
++      })
++    else
++      local stderr = request.stderr
++      if request.stderr_read_error then stderr = (stderr .. " " .. request.stderr_read_error):sub(-self.limits.max_stderr_bytes) end
++      local lowered = stderr:lower()
++      local error_code = (lowered:find("regex parse error", 1, true) or lowered:find("error parsing regex", 1, true)) and "invalid_regex"
++        or code == 124 and "search_timeout"
++        or "rg_failed"
++      local detail = stderr ~= "" and escaped_message(stderr, self.limits.max_error_bytes) or "ripgrep exited with code " .. tostring(code) .. " signal " .. tostring(signal)
++      if request.stderr_truncated then detail = detail .. " (stderr capped)" end
++      self:_emit(request, {
++        kind = "error",
++        status = request.item_count > 0 and "partial" or "error",
++        error = error_value(error_code, detail, error_code ~= "invalid_regex", {
++          partial = request.item_count > 0,
++          exit_code = code,
++          signal = signal,
++          stderr_truncated = request.stderr_truncated,
++        }),
++      })
++    end
++  end
++  request.process = nil
++  request.scope:dispose()
++end
++
++function Provider:_new_request(normalized, sink, key)
++  self.next_request = self.next_request + 1
++  local child, child_err = self.scope:child("search:" .. self.next_request)
++  if not child then return nil, child_err end
++  local request = {
++    id = self.next_request,
++    scope = child,
++    provider = self,
++    key = key,
++    workspace_id = normalized.workspace_id,
++    workspace_generation = normalized.workspace_generation,
++    root = normalized.root,
++    query = normalized.query,
++    generation = normalized.generation,
++    session_id = normalized.session_id,
++    sink = sink,
++    active = true,
++    accept_output = true,
++    chunks = {},
++    chunk_head = 1,
++    chunk_tail = 0,
++    queue_bytes = 0,
++    current_offset = 1,
++    json_tail = "",
++    drain_scheduled = false,
++    draining = false,
++    output_bytes = 0,
++    stderr = "",
++    stderr_bytes = 0,
++    stderr_truncated = false,
++    batch = {},
++    batch_bytes = 0,
++    item_count = 0,
++    result_bytes = 0,
++    unknown_messages = 0,
++  }
++  self.requests[request.id] = request
++  self.sessions[key] = request
++  child:defer(function()
++    request.active = false
++    self:_terminate(request)
++    request.process = nil
++    self:_remove(request)
++    self:_clear_input(request)
++    request.batch = {}
++    request.batch_bytes = 0
++    request.stderr = ""
++    request.stats = nil
++    request.drain_scheduled = false
++    request.drain_ticket = nil
++    request.sink = nil
++    request.query = nil
++    request.root = nil
++    request.provider = nil
++  end, "ripgrep-request:" .. request.id, "process")
++  function request:cancel(reason)
++    if not self.active or self.finished or self.cancelling then return false end
++    self.cancelling = true
++    self.provider:_emit(self, {
++      kind = "status",
++      status = "cancelled",
++      completeness = "unknown",
++      reason = escaped_message(type(reason) == "string" and reason or "cancelled", self.provider.limits.max_error_bytes),
++      item_count = self.item_count,
++    })
++    return self.scope:dispose()
++  end
++  request.dispose = request.cancel
++  return request
++end
++
++function Provider:start(request, sink)
++  local live, live_err = self:_live()
++  if not live then return nil, live_err end
++  if type(sink) ~= "function" then return nil, error_value("invalid_sink", "search sink must be a function") end
++  local normalized, normalize_err = normalize_request(request, self.limits)
++  if not normalized then return nil, normalize_err end
++
++  local key = session_key(normalized.workspace_id, normalized.session_id)
++  local previous = self.sessions[key]
++  if previous and previous.active then previous:cancel("superseded") end
++  local active, workspace_active = 0, 0
++  for _, current in pairs(self.requests) do
++    if current.active then
++      active = active + 1
++      if current.workspace_id == normalized.workspace_id then workspace_active = workspace_active + 1 end
++    end
++  end
++  if active >= self.limits.max_active_requests or workspace_active >= self.limits.max_concurrent_per_workspace then
++    return nil, error_value("request_capacity", "ripgrep request capacity is full", true, { active = active, workspace_active = workspace_active })
++  end
++
++  local executable = self:_executable()
++  if normalized.query ~= "" and not executable then
++    return nil, error_value("missing_dependency", "ripgrep executable 'rg' was not found on PATH", true)
++  end
++  local handle, handle_err = self:_new_request(normalized, sink, key)
++  if not handle then return nil, handle_err end
++  if normalized.query == "" then
++    handle.status = "empty"
++    local ticket, schedule_err = handle.scope:schedule(function()
++      if not handle.active then return end
++      self:_emit(handle, { kind = "status", status = "empty", completeness = "complete", reason = "empty_query" })
++      self:_emit(handle, { kind = "done", status = "complete", completeness = "complete", total = 0, bytes = 0 })
++      handle.process = nil
++      handle.scope:dispose()
++    end)
++    if not ticket then handle.scope:dispose(); return nil, schedule_err end
++    return handle
++  end
++
++  local normalized_command, argv_err = command_for(executable, normalized)
++  if not normalized_command then
++    handle.scope:dispose()
++    return nil, argv_err
++  end
++  self:_emit(handle, { kind = "status", status = "running", completeness = "unknown" })
++  local okay, process_or_error = pcall(self.system, normalized_command, {
++    cwd = normalized.root,
++    text = false,
++    timeout = self.limits.timeout_ms,
++    stdout = function(read_error, data) self:_enqueue_stdout(handle, read_error, data) end,
++    stderr = function(read_error, data) self:_append_stderr(handle, read_error, data) end,
++  }, function(result)
++    handle.process = nil
++    if not handle.active then return end
++    handle.exit_result = result
++    self:_schedule_drain(handle)
++  end)
++  if not okay or type(process_or_error) ~= "table" then
++    handle.process = nil
++    local detail = escaped_message(okay and "ripgrep process could not be started" or process_or_error, self.limits.max_error_bytes)
++    local error_result = error_value("spawn_failed", detail, true)
++    self:_emit(handle, { kind = "error", status = "error", error = error_result })
++    handle.scope:dispose()
++    return nil, error_result
++  end
++  handle.process = process_or_error
++  if handle.limit_reason or handle.parse_error or handle.stream_error then self:_terminate(handle) end
++  handle.scope:defer(function()
++    self:_terminate(handle)
++    handle.process = nil
++  end, "ripgrep-process:" .. handle.id, "process")
++  return handle
++end
++
++function Provider:status()
++  local active, by_workspace = 0, {}
++  local requests = {}
++  for _, request in pairs(self.requests) do
++    if request.active then
++      active = active + 1
++      by_workspace[request.workspace_id] = (by_workspace[request.workspace_id] or 0) + 1
++      requests[#requests + 1] = {
++        id = request.id,
++        workspace_id = request.workspace_id,
++        generation = request.generation,
++        session_id = request.session_id,
++        process_active = request.process ~= nil,
++        output_bytes = request.output_bytes,
++        pending_bytes = request.queue_bytes + (request.current_chunk and (#request.current_chunk - request.current_offset + 1) or 0) + #request.json_tail,
++        stderr_bytes = #request.stderr,
++        items = request.item_count,
++        retained_bytes = request.result_bytes,
++        pending_callbacks = request.scope.pending_callbacks,
++        limit_reason = request.limit_reason,
++      }
++    end
++  end
++  table.sort(requests, function(left, right) return left.id < right.id end)
++  return { disposed = self.disposed, active_requests = active, workspaces = by_workspace, requests = requests, limits = vim.deepcopy(self.limits) }
++end
++
++function Provider:dispose()
++  if self.disposed then return false end
++  self.disposed = true
++  self.scope:dispose()
++  return true
++end
++
++M.Provider = Provider
++return M
+
+diff --git a/tests/runtime/test_rg_provider.lua b/tests/runtime/test_rg_provider.lua
+new file mode 100644
+index 0000000..3ff5eed
+--- /dev/null
++++ b/tests/runtime/test_rg_provider.lua
+@@ -0,0 +1,535 @@
++local MiniTest = require("mini.test")
++local expect = MiniTest.expect
++local child
++local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
++
++local function evaluate(source)
++  return child.lua(source, { root })
++end
++
++local helpers = [[
++local function make_workspace(root, policy, scope)
++  policy = policy or { hidden='exclude', ignored='exclude', symlinks='never', include={}, exclude={} }
++  local workspace = assert(require('workbench.services.workspace').new({
++    root_service = { canonicalize=function(_, path) return path end },
++    ignore_service = { snapshot=function() return policy end },
++  }))
++  return assert(workspace:open({ explicit_root=root, scope=scope })), workspace
++end
++local function write_bytes(path, value)
++  local file=assert(io.open(path,'wb'))
++  assert(file:write(value))
++  assert(file:close())
++end
++local function finished(events)
++  local last=events[#events]
++  return last and (last.kind=='done' or last.kind=='error')
++end
++local function wait_finished(events)
++  assert(vim.wait(5000,function() return finished(events) end,5),'timed out waiting for provider completion')
++end
++local function items(events)
++  local result={}
++  for _,event in ipairs(events) do
++    if event.kind=='batch' then
++      for _,item in ipairs(event.items) do result[#result+1]=item end
++    end
++  end
++  return result
++end
++local function fake_system()
++  local fake={ calls={} }
++  fake.run=function(argv,opts,on_exit)
++    local call={ argv=vim.deepcopy(argv),opts=opts,on_exit=on_exit,kills={} }
++    function call:kill(signal) self.kills[#self.kills+1]=signal end
++    fake.calls[#fake.calls+1]=call
++    return call
++  end
++  return fake
++end
++]]
++
++return MiniTest.new_set({
++  hooks = {
++    pre_case = function()
++      child = MiniTest.new_child_neovim()
++      child.start({}, { nvim_executable = assert(vim.env.NVIM_TEST_BINARY) })
++      child.lua([[local repo_root, test_root = ...; vim.opt.runtimepath:prepend(repo_root); vim.opt.runtimepath:append(test_root)]], { root, root .. "/tests" })
++    end,
++    post_case = function()
++      if child then pcall(child.stop); child = nil end
++    end,
++  },
++}, {
++  ["real ripgrep produces typed byte locations for Unicode lines and raw newline paths"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-raw-path'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local raw_name='line:'..string.char(10)..'break.txt'
++      write_bytes(root..'/'..raw_name,'🙂 needle after\r\n')
++      local snapshot=make_workspace(root)
++      local provider=assert(require('workbench.providers.rg').new())
++      local events={}
++      local handle=assert(provider:start({workspace=snapshot,query='needle',generation=1,session_id='raw'},function(event) events[#events+1]=event end))
++      wait_finished(events)
++      local found=items(events)
++      local item=assert(found[1])
++      local output={
++        state=provider:status(),event=events[#events],items=#found,request_scope=handle.scope:inventory(),
++        retained={sink=handle.sink,query=handle.query,root=handle.root,provider=handle.provider},
++        raw_path=item.payload.raw_path,label=item.label,detail=item.detail,
++        match_bytes=item.payload.match_bytes,raw_line=item.payload.raw_line,
++        start=item.location.range.start.character,finish=item.location.range.finish.character,
++        line=item.location.range.start.line,encoding=item.location.encoding,
++        generation=events[#events].generation,argv=handle.id,
++      }
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.event.kind, "done")
++    expect.equality(result.event.total, 1)
++    expect.equality(result.items, 1)
++    expect.equality(result.raw_path, "./line:\nbreak.txt")
++    expect.equality(result.label, "🙂 needle after")
++    expect.equality(result.detail:find("line\\:\\x0Abreak.txt:1", 1, true) ~= nil, true)
++    expect.equality(result.match_bytes, "needle")
++    expect.equality(result.raw_line, "🙂 needle after")
++    expect.equality(result.start, 5)
++    expect.equality(result.finish, 11)
++    expect.equality(result.line, 0)
++    expect.equality(result.encoding, "utf-8")
++    expect.equality(result.generation, 1)
++    expect.equality(result.state.active_requests, 0)
++    expect.equality(result.request_scope.alive, false)
++    expect.equality(result.request_scope.pending_callbacks, 0)
++    expect.equality(result.request_scope.resource_count, 0)
++    expect.equality(result.retained.sink, nil)
++    expect.equality(result.retained.query, nil)
++    expect.equality(result.retained.root, nil)
++    expect.equality(result.retained.provider, nil)
++  end,
++
++  ["real rg honors explicit hidden and project-ignore policy without global Git excludes"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-policy'
++      assert(vim.fn.mkdir(root..'/.git/info','p')==1)
++      write_bytes(root..'/.git/HEAD','ref: refs/heads/main\n')
++      write_bytes(root..'/.git/info/exclude','excluded.txt\n')
++      write_bytes(root..'/.gitignore','ignored.txt\n')
++      write_bytes(root..'/.ignore','shared.txt\n')
++      write_bytes(root..'/.hidden','policy marker\n')
++      assert(vim.fn.mkdir(root..'/.private','p')==1)
++      write_bytes(root..'/.private/hidden-child.txt','policy marker\n')
++      write_bytes(root..'/visible.txt','policy marker\n')
++      write_bytes(root..'/ignored.txt','policy marker\n')
++      write_bytes(root..'/shared.txt','policy marker\n')
++      write_bytes(root..'/excluded.txt','policy marker\n')
++      local provider=assert(require('workbench.providers.rg').new())
++      local function search(policy,generation)
++        local snapshot=make_workspace(root,policy)
++        local events={}
++        assert(provider:start({workspace=snapshot,query='policy marker',generation=generation,session_id='policy-'..generation,flags={fixed=true}},function(event) events[#events+1]=event end))
++        wait_finished(events)
++        local names={}
++        for _,item in ipairs(items(events)) do names[vim.fs.basename(item.location.resource.path)]=true end
++        return names,events[#events]
++      end
++      local default,default_done=search({hidden='exclude',ignored='exclude',symlinks='never',include={},exclude={}},1)
++      local included,included_done=search({hidden='exclude',ignored='include',symlinks='never',include={},exclude={}},2)
++      local all,all_done=search({hidden='include',ignored='include',symlinks='never',include={},exclude={}},3)
++      local globbed,globbed_done=search({hidden='exclude',ignored='exclude',symlinks='never',include={'.hidden','.private/**'},exclude={}},4)
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return {default=default,default_done=default_done,included=included,included_done=included_done,all=all,all_done=all_done,globbed=globbed,globbed_done=globbed_done}
++    ]])
++    expect.equality(result.default_done.kind, "done")
++    expect.equality(result.default["visible.txt"], true)
++    expect.equality(result.default["excluded.txt"], true)
++    expect.equality(result.default["ignored.txt"], nil)
++    expect.equality(result.default["shared.txt"], nil)
++    expect.equality(result.default[".hidden"], nil)
++    expect.equality(result.included["visible.txt"], true)
++    expect.equality(result.included["excluded.txt"], true)
++    expect.equality(result.included["ignored.txt"], true)
++    expect.equality(result.included["shared.txt"], true)
++    expect.equality(result.included[".hidden"], nil)
++    expect.equality(result.all[".hidden"], true)
++    expect.equality(result.all_done.kind, "done")
++    expect.equality(next(result.globbed), nil)
++    expect.equality(result.globbed_done.total, 0)
++  end,
++
++  ["leading-dash query is data, invalid regex is an error, and no matches are complete"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-query'
++      assert(vim.fn.mkdir(root,'p')==1)
++      write_bytes(root..'/dash.txt','-token appears here\n')
++      local snapshot=make_workspace(root)
++      local provider=assert(require('workbench.providers.rg').new())
++      local function search(query,flags,generation)
++        local events={}
++        local handle,err=provider:start({workspace=snapshot,query=query,flags=flags,generation=generation,session_id='query-'..generation},function(event) events[#events+1]=event end)
++        if handle then wait_finished(events) end
++        return events,err
++      end
++      local dash=search('-token',{fixed=true},1)
++      local invalid=search('(',{case='sensitive'},2)
++      local empty=search('not-present-anywhere',{fixed=true},3)
++      local output={dash=items(dash),dash_done=dash[#dash],invalid=invalid[#invalid],empty=empty[#empty],status=provider:status()}
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(#result.dash, 1)
++    expect.equality(result.dash_done.kind, "done")
++    expect.equality(result.invalid.kind, "error")
++    expect.equality(result.invalid.error.code, "invalid_regex")
++    expect.equality(result.empty.kind, "done")
++    expect.equality(result.empty.total, 0)
++    expect.equality(result.empty.completeness, "complete")
++    expect.equality(result.status.active_requests, 0)
++  end,
++
++  ["non-UTF-8 match bytes survive ripgrep's JSON bytes encoding"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-bytes'
++      assert(vim.fn.mkdir(root,'p')==1)
++      write_bytes(root..'/bytes.txt',string.char(255)..'needle\n')
++      local snapshot=make_workspace(root)
++      local provider=assert(require('workbench.providers.rg').new())
++      local events={}
++      assert(provider:start({workspace=snapshot,query='needle',flags={fixed=true},generation=1,session_id='bytes'},function(event) events[#events+1]=event end))
++      wait_finished(events)
++      local item=assert(items(events)[1])
++      local output={event=events[#events],raw_path=item.payload.raw_path,raw_line=item.payload.raw_line,label=item.label,match=item.payload.match_bytes,uri=item.location.resource.uri,start=item.location.range.start.character}
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.event.kind, "done")
++    expect.equality(result.event.total, 1)
++    expect.equality(result.raw_path, "./bytes.txt")
++    expect.equality(result.raw_line, string.char(255) .. "needle")
++    expect.equality(result.label, "\\xFFneedle")
++    expect.equality(result.match, "needle")
++    expect.equality(result.start, 1)
++    expect.equality(result.uri:find("bytes.txt", 1, true) ~= nil, true)
++  end,
++
++  ["split JSON Lines chunks preserve partial JSON, UTF-8 bytes, and explicit argv"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-chunks'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root)
++      local fake=fake_system()
++      local provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end}))
++      local events={}
++      local handle=assert(provider:start({workspace=snapshot,query='-needle',flags={fixed=true,word=true},generation=9,session_id='chunks'},function(event) events[#events+1]=event end))
++      local call=fake.calls[1]
++      local raw_name=string.char(255)..'.txt'
++      local encoded=vim.json.encode({type='match',data={path={bytes=vim.base64.encode(raw_name)},lines={text='🙂 -needle text\n'},line_number=1,submatches={{match={text='-needle'},start=5,['end']=12}}}})..'\n'
++      for index=1,#encoded do call.opts.stdout(nil,encoded:sub(index,index)) end
++      call.opts.stderr(nil,'')
++      call.on_exit({code=0,signal=0})
++      wait_finished(events)
++      local item=assert(items(events)[1])
++      local positions={}
++      for index,value in ipairs(call.argv) do positions[value]=index end
++      local output={events=events,items=items(events),cwd=call.opts.cwd,text=call.opts.text,argv=call.argv,query_after_e=call.argv[positions['-e']+1],path_after_separator=call.argv[positions['--']+1],status=provider:status(),location=item.location,raw_path=item.payload.raw_path}
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.events[#result.events].kind, "done")
++    expect.equality(#result.items, 1)
++    expect.equality(result.location.range.start.character, 5)
++    expect.equality(result.location.range.finish.character, 12)
++    expect.equality(result.raw_path, string.char(255) .. ".txt")
++    expect.equality(result.location.resource.uri:find("%%ff") ~= nil, true)
++    expect.equality(result.query_after_e, "-needle")
++    expect.equality(result.path_after_separator, ".")
++    expect.equality(result.text, false)
++    expect.equality(result.cwd ~= "", true)
++    expect.equality(result.status.active_requests, 0)
++    expect.equality(table.concat(result.argv, " "):find("--no-config", 1, true) ~= nil, true)
++    expect.equality(table.concat(result.argv, " "):find("--no-ignore-global", 1, true) ~= nil, true)
++    expect.equality(table.concat(result.argv, " "):find("--sort path", 1, true) ~= nil, true)
++  end,
++
++  ["empty query and missing ripgrep never spawn a process"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-missing'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root)
++      local fake=fake_system()
++      local missing=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '' end}))
++      local capability=missing:capabilities({workspace=snapshot})
++      local empty_events={}
++      local empty=assert(missing:start({workspace=snapshot,query='',generation=1,session_id='empty'},function(event) empty_events[#empty_events+1]=event end))
++      wait_finished(empty_events)
++      local absent,absent_error=missing:start({workspace=snapshot,query='anything',generation=2,session_id='missing'},function() end)
++      local output={capability=capability,empty_events=empty_events,empty_active=empty.active,absent=absent,absent_error=absent_error,calls=#fake.calls}
++      missing:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.capability.state, "unavailable")
++    expect.equality(result.empty_events[1].status, "empty")
++    expect.equality(result.empty_events[#result.empty_events].kind, "done")
++    expect.equality(result.empty_active, false)
++    expect.equality(result.absent, nil)
++    expect.equality(result.absent_error.code, "missing_dependency")
++    expect.equality(result.calls, 0)
++  end,
++
++  ["symlink policies that cannot be safely reproduced are explicitly unavailable"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-symlinks'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root,{hidden='exclude',ignored='exclude',symlinks='internal',include={},exclude={}})
++      local fake=fake_system()
++      local provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end}))
++      local capability=provider:capabilities({workspace=snapshot})
++      local handle,err=provider:start({workspace=snapshot,query='anything',generation=1},function() end)
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return {capability=capability,handle=handle,error=err,calls=#fake.calls}
++    ]])
++    expect.equality(result.capability.state, "unsupported")
++    expect.equality(result.capability.reason, "symlink_policy_unsupported")
++    expect.equality(result.handle, nil)
++    expect.equality(result.error.code, "symlink_policy_unsupported")
++    expect.equality(result.calls, 0)
++  end,
++
++  ["folder scopes stay inside the explicit workspace root"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-scope'
++      local nested=root..'/nested'
++      local outside=vim.fn.tempname()..'-wb09-rg-outside'
++      assert(vim.fn.mkdir(nested,'p')==1)
++      assert(vim.fn.mkdir(outside,'p')==1)
++      write_bytes(nested..'/inside.txt','scope marker\n')
++      write_bytes(outside..'/outside.txt','scope marker\n')
++      local link_path=root..'/external-link'
++      local link_err=(vim.uv or vim.loop).fs_symlink(outside,link_path,{dir=true})
++      local snapshot=make_workspace(root)
++      local provider=assert(require('workbench.providers.rg').new())
++      local events={}
++      assert(provider:start({workspace=snapshot,query='scope',scope={kind='folder',explicit=true,path=nested},generation=1},function(event) events[#events+1]=event end))
++      wait_finished(events)
++      local scoped=items(events)
++      local outside_handle,outside_error=provider:start({workspace=snapshot,query='scope',scope={kind='folder',explicit=true,path=outside},generation=2},function() end)
++      local link_handle,link_error
++      if not link_err then link_handle,link_error=provider:start({workspace=snapshot,query='scope',scope={kind='folder',explicit=true,path=link_path},generation=3},function() end) end
++      local output={count=#scoped,path=scoped[1] and scoped[1].location.resource.path,outside_handle=outside_handle,outside_error=outside_error,link_error=link_error,link_created=not link_err}
++      provider:dispose(); vim.fn.delete(root,'rf'); vim.fn.delete(outside,'rf')
++      return output
++    ]])
++    expect.equality(result.count, 1)
++    expect.equality(result.path:find("nested/inside.txt", 1, true) ~= nil, true)
++    expect.equality(result.outside_handle, nil)
++    expect.equality(result.outside_error.code, "outside_root")
++    if result.link_created then
++      expect.equality(result.link_error.code, "symlink_scope_unsupported")
++    end
++  end,
++
++  ["oversized JSON records become visible truncation and stderr retention is bounded"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-limits'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root)
++      local fake=fake_system()
++      local provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end,max_json_line_bytes=16,max_pending_output_bytes=1024,max_stderr_bytes=8,max_error_bytes=64}))
++      local truncated_events={}
++      local truncated=assert(provider:start({workspace=snapshot,query='x',generation=1,session_id='long'},function(event) truncated_events[#truncated_events+1]=event end))
++      local too_long=fake.calls[1]
++      too_long.opts.stdout(nil,string.rep('x',17))
++      assert(vim.wait(1000,function() return truncated_events[2] and truncated_events[2].status=='partial' end,5),'oversized line did not trigger a bounded partial status')
++      too_long.on_exit({code=143,signal=15})
++      wait_finished(truncated_events)
++      local error_events={}
++      assert(provider:start({workspace=snapshot,query='y',generation=2,session_id='stderr'},function(event) error_events[#error_events+1]=event end))
++      local noisy=fake.calls[2]
++      noisy.opts.stderr(nil,string.rep('E',80))
++      noisy.on_exit({code=2,signal=0})
++      wait_finished(error_events)
++      local output={truncated=truncated_events[#truncated_events],truncated_status=truncated_events[2],killed=#too_long.kills,stderr=error_events[#error_events],active=provider:status().active_requests}
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.truncated.kind, "done")
++    expect.equality(result.truncated.status, "partial")
++    expect.equality(result.truncated.completeness, "truncated")
++    expect.equality(result.truncated_status.reason, "json_line_limit")
++    expect.equality(result.killed > 0, true)
++    expect.equality(result.stderr.kind, "error")
++    expect.equality(result.stderr.error.stderr_truncated, true)
++    expect.equality(#result.stderr.error.message < 100, true)
++    expect.equality(result.active, 0)
++  end,
++
++  ["new session generations cancel old process output and enforce request concurrency"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-races'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root)
++      local fake=fake_system()
++      local provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end,max_active_requests=4,max_concurrent_per_workspace=2}))
++      local old_events,new_events,third_events={},{},{}
++      local old=assert(provider:start({workspace=snapshot,query='old',generation=1,session_id='same'},function(event) old_events[#old_events+1]=event end))
++      local old_call=fake.calls[1]
++      old_call.opts.stdout(nil,vim.json.encode({type='match',data={path={text='staged.txt'},lines={text='staged old\n'},line_number=1,submatches={{match={text='old'},start=7,['end']=10}}}})..'\n')
++      local current=assert(provider:start({workspace=snapshot,query='new',generation=2,session_id='same'},function(event) new_events[#new_events+1]=event end))
++      local second=assert(provider:start({workspace=snapshot,query='other',generation=3,session_id='other'},function(event) third_events[#third_events+1]=event end))
++      local third,third_error=provider:start({workspace=snapshot,query='overflow',generation=4,session_id='third'},function() end)
++      old_call.opts.stdout(nil,vim.json.encode({type='match',data={path={text='stale.txt'},lines={text='old\n'},line_number=1,submatches={{match={text='old'},start=0,['end']=3}}}})..'\n')
++      old_call.on_exit({code=0,signal=0})
++      old:cancel('test cleanup'); current:cancel('test cleanup'); second:cancel('test cleanup')
++      provider:dispose()
++      local output={old_status=old_events[#old_events],new_status=new_events[#new_events],old_batches=items(old_events),old_kills=#old_call.kills,old_scope=old.scope:inventory(),third=third,third_error=third_error,calls=#fake.calls,active=provider:status().active_requests}
++      vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.old_status.status, "cancelled")
++    expect.equality(#result.old_batches, 0)
++    expect.equality(result.old_kills, 1)
++    expect.equality(result.old_scope.pending_callbacks, 0)
++    expect.equality(result.old_scope.resource_count, 0)
++    expect.equality(result.third, nil)
++    expect.equality(result.third_error.code, "request_capacity")
++    expect.equality(result.calls, 3)
++    expect.equality(result.active, 0)
++  end,
++
++  ["result, batch, and pending-output limits stop producers visibly"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-result-limits'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root)
++      local fake=fake_system()
++      local provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end,max_items=1,max_batch_items=1,max_json_line_bytes=4096}))
++      local events={}
++      local handle=assert(provider:start({workspace=snapshot,query='x',generation=1,session_id='count'},function(event) events[#events+1]=event end))
++      local record=vim.json.encode({type='match',data={path={text='hit.txt'},lines={text='x\n'},line_number=1,submatches={{match={text='x'},start=0,['end']=1}}}})..'\n'
++      fake.calls[1].opts.stdout(nil,record..record)
++      assert(vim.wait(1000,function() for _,event in ipairs(events) do if event.status=='partial' then return true end end return false end,5),'item cap did not report truncation')
++      fake.calls[1].on_exit({code=143,signal=15})
++      wait_finished(events)
++      local queue_provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end,max_pending_output_bytes=32}))
++      local queue_events={}
++      assert(queue_provider:start({workspace=snapshot,query='y',generation=2,session_id='queue'},function(event) queue_events[#queue_events+1]=event end))
++      fake.calls[2].opts.stdout(nil,string.rep('q',64))
++      assert(vim.wait(1000,function() return queue_events[2] and queue_events[2].status=='partial' end,5),'queue cap did not report truncation')
++      fake.calls[2].on_exit({code=143,signal=15})
++      wait_finished(queue_events)
++      local batch_provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end,max_batch_bytes=16}))
++      local batch_events={}
++      assert(batch_provider:start({workspace=snapshot,query='z',generation=3,session_id='batch'},function(event) batch_events[#batch_events+1]=event end))
++      fake.calls[3].opts.stdout(nil,vim.json.encode({type='match',data={path={text='long-name.txt'},lines={text='z\n'},line_number=1,submatches={{match={text='z'},start=0,['end']=1}}}})..'\n')
++      assert(vim.wait(1000,function() return batch_events[2] and batch_events[2].status=='partial' end,5),'single-item batch cap did not report truncation')
++      fake.calls[3].on_exit({code=143,signal=15})
++      wait_finished(batch_events)
++      local output={count=events[#events],count_items=#items(events),count_kills=#fake.calls[1].kills,queue=queue_events[#queue_events],queue_kills=#fake.calls[2].kills,batch=batch_events[#batch_events],batch_items=#items(batch_events),batch_kills=#fake.calls[3].kills,old_scope=handle.scope:inventory()}
++      provider:dispose(); queue_provider:dispose(); batch_provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.count.status, "partial")
++    expect.equality(result.count.limit_reason, "result_count_limit")
++    expect.equality(result.count_items, 1)
++    expect.equality(result.count_kills > 0, true)
++    expect.equality(result.queue.status, "partial")
++    expect.equality(result.queue.limit_reason, "output_queue_limit")
++    expect.equality(result.queue_kills > 0, true)
++    expect.equality(result.batch.status, "partial")
++    expect.equality(result.batch.limit_reason, "item_batch_limit")
++    expect.equality(result.batch_items, 0)
++    expect.equality(result.batch_kills > 0, true)
++    expect.equality(result.old_scope.alive, false)
++    expect.equality(result.old_scope.pending_callbacks, 0)
++    expect.equality(result.old_scope.resource_count, 0)
++  end,
++
++  ["real ripgrep oversized single lines stop at the bounded JSON tail"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-huge-line'
++      assert(vim.fn.mkdir(root,'p')==1)
++      write_bytes(root..'/huge.txt','needle'..string.rep('x',128*1024)..'\n')
++      local snapshot=make_workspace(root)
++      local provider=assert(require('workbench.providers.rg').new({max_json_line_bytes=16*1024,max_pending_output_bytes=256*1024}))
++      local events={}
++      assert(provider:start({workspace=snapshot,query='needle',flags={fixed=true},generation=1},function(event) events[#events+1]=event end))
++      assert(vim.wait(5000,function() for _,event in ipairs(events) do if event.status=='partial' then return true end end return false end,2),'large rg line did not trigger bounded truncation')
++      assert(vim.wait(5000,function() return events[#events] and events[#events].kind=='done' end,2),'terminated large-line process was not reaped')
++      local output={events=events,items=#items(events),scope=provider:status()}
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.events[#result.events].kind, "done")
++    expect.equality(result.events[#result.events].status, "partial")
++    expect.equality(result.events[#result.events].completeness, "truncated")
++    expect.equality(result.events[#result.events].limit_reason, "json_line_limit")
++    expect.equality(result.items, 0)
++    expect.equality(result.scope.active_requests, 0)
++  end,
++
++  ["one hundred cancelled searches dispose owned callbacks and process handles"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-churn'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root)
++      local fake=fake_system()
++      local provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end}))
++      local empty_record=vim.json.encode({type='begin',data={path={text='late.txt'}}})..'\n'
++      local all_scopes_clean=true
++      for index=1,100 do
++        local handle=assert(provider:start({workspace=snapshot,query='cycle',generation=index,session_id='cycle-'..index},function() end))
++        local call=fake.calls[index]
++        call.opts.stdout(nil,empty_record)
++        assert(handle:cancel('cycle cleanup'))
++        call.opts.stdout(nil,empty_record)
++        call.on_exit({code=0,signal=0})
++        local inventory=handle.scope:inventory()
++        if inventory.alive or inventory.pending_callbacks~=0 or inventory.resource_count~=0 then all_scopes_clean=false end
++      end
++      local status=provider:status()
++      local root_scope=provider.scope:inventory()
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return {calls=#fake.calls,all_scopes_clean=all_scopes_clean,status=status,root_scope=root_scope}
++    ]])
++    expect.equality(result.calls, 100)
++    expect.equality(result.all_scopes_clean, true)
++    expect.equality(result.status.active_requests, 0)
++    expect.equality(result.status.requests, {})
++    expect.equality(result.root_scope.resource_count, 0)
++    expect.equality(result.root_scope.pending_callbacks, 0)
++  end,
++
++  ["reentrant cancellation during batch delivery stops remaining submatches"] = function()
++    local result = evaluate(helpers .. [[
++      local root=vim.fn.tempname()..'-wb09-rg-reentrant'
++      assert(vim.fn.mkdir(root,'p')==1)
++      local snapshot=make_workspace(root)
++      local fake=fake_system()
++      local provider=assert(require('workbench.providers.rg').new({system=fake.run,executable=function() return '/fake/rg' end,max_batch_items=1}))
++      local events,handle={},nil
++      handle=assert(provider:start({workspace=snapshot,query='x',generation=1},function(event)
++        events[#events+1]=event
++        if event.kind=='batch' then handle:cancel(string.rep('reason',1000)..'\n\27[31m') end
++      end))
++      local call=fake.calls[1]
++      call.opts.stdout(nil,vim.json.encode({type='match',data={path={text='same.txt'},lines={text='xx\n'},line_number=1,submatches={{match={text='x'},start=0,['end']=1},{match={text='x'},start=1,['end']=2}}}})..'\n')
++      assert(vim.wait(1000,function() return not handle.active end,5),'reentrant cancellation did not dispose the request')
++      call.on_exit({code=0,signal=0})
++      local found=items(events)
++      local output={items=#found,last=events[#events],kills=#call.kills,scope=handle.scope:inventory(),provider=provider:status()}
++      provider:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.items, 1)
++    expect.equality(result.last.status, "cancelled")
++    expect.equality(#result.last.reason <= 2048, true)
++    expect.equality(result.last.reason:find("\n", 1, true), nil)
++    expect.equality(result.last.reason:find("\27", 1, true), nil)
++    expect.equality(result.kills, 1)
++    expect.equality(result.scope.alive, false)
++    expect.equality(result.scope.pending_callbacks, 0)
++    expect.equality(result.scope.resource_count, 0)
++    expect.equality(result.provider.active_requests, 0)
++  end,
++})
+
+diff --git a/bench/rg_provider.lua b/bench/rg_provider.lua
+new file mode 100644
+index 0000000..d8907f3
+--- /dev/null
++++ b/bench/rg_provider.lua
+@@ -0,0 +1,130 @@
++local source = debug.getinfo(1, "S").source:sub(2)
++local root = vim.fn.fnamemodify(source, ":p:h:h")
++vim.opt.runtimepath:prepend(root)
++
++local uv = vim.uv or vim.loop
++local fixture = assert(vim.env.WB09_FIXTURE, "WB09_FIXTURE must point to a generated normal fixture")
++local workspace_root = fixture .. "/workspace"
++local repetitions = tonumber(vim.env.WB09_REPETITIONS) or 20
++assert(repetitions >= 10 and repetitions <= 100, "WB09_REPETITIONS must be between 10 and 100")
++local Workspace = require("workbench.services.workspace")
++local workspace = assert(Workspace.new({
++  root_service = { canonicalize = function(_, path) return path end },
++  ignore_service = { snapshot = function() return { hidden = "exclude", ignored = "exclude", symlinks = "never", include = {}, exclude = {} } end },
++}))
++local snapshot = assert(workspace:open({ explicit_root = workspace_root }))
++
++local function percentile(values, fraction)
++  local sorted = vim.deepcopy(values)
++  table.sort(sorted)
++  return sorted[math.max(1, math.ceil(#sorted * fraction))]
++end
++
++local function summary(values)
++  return {
++    n = #values,
++    p50_ms = percentile(values, 0.50),
++    p95_ms = percentile(values, 0.95),
++    max_ms = math.max(unpack(values)),
++  }
++end
++
++local function now_ms()
++  return uv.hrtime() / 1000000
++end
++
++local search_provider = assert(require("workbench.providers.rg").new())
++local first_batch_ms, completion_ms = {}, {}
++local max_item_count, max_result_bytes, max_pending_bytes, max_lua_kib = 0, 0, 0, 0
++local full_status_counts = {}
++local limit_reasons = {}
++for index = 1, repetitions do
++  collectgarbage("collect")
++  local began = now_ms()
++  local first_batch, finished
++  local event_items = 0
++  local handle = assert(search_provider:start({
++    workspace = snapshot,
++    query = "payload=",
++    flags = { fixed = true, case = "sensitive" },
++    generation = index,
++    session_id = "search-" .. index,
++  }, function(event)
++    if event.kind == "batch" then
++      event_items = event_items + #event.items
++      if not first_batch then first_batch = now_ms() end
++    elseif event.kind == "done" then
++      finished = event
++      if event.limit_reason then limit_reasons[event.limit_reason] = (limit_reasons[event.limit_reason] or 0) + 1 end
++      if first_batch then
++        completion_ms[#completion_ms + 1] = now_ms() - began
++      end
++    elseif event.kind == "error" then
++      error("real rg search failed: " .. vim.inspect(event.error))
++    end
++    local active = search_provider:status().requests[1]
++    if active then max_pending_bytes = math.max(max_pending_bytes, active.pending_bytes) end
++  end))
++  assert(vim.wait(30000, function() return finished ~= nil end, 2), "real ripgrep search timed out")
++  assert(first_batch, "real ripgrep search emitted no result batch")
++  first_batch_ms[#first_batch_ms + 1] = first_batch - began
++  max_item_count = math.max(max_item_count, finished.total or event_items)
++  max_result_bytes = math.max(max_result_bytes, finished.bytes or 0)
++  max_lua_kib = math.max(max_lua_kib, collectgarbage("count"))
++  full_status_counts[finished.status] = (full_status_counts[finished.status] or 0) + 1
++  assert(not handle.active, "completed search request retained active ownership")
++end
++local post_search_inventory = search_provider:status()
++assert(post_search_inventory.active_requests == 0, "search provider retained active requests after completion")
++search_provider:dispose()
++
++local cancellation_exit
++local cancellation_probe
++local function observed_system(argv, options, on_exit)
++  return vim.system(argv, options, function(result)
++    if cancellation_probe then cancellation_probe.exit_ms = now_ms() end
++    on_exit(result)
++  end)
++end
++local cancel_provider = assert(require("workbench.providers.rg").new({ system = observed_system }))
++local cancellation_ms = {}
++for index = 1, repetitions do
++  cancellation_probe = {}
++  local handle = assert(cancel_provider:start({
++    workspace = snapshot,
++    query = "payload=",
++    flags = { fixed = true, case = "sensitive" },
++    generation = repetitions + index,
++    session_id = "cancel-" .. index,
++  }, function() end))
++  cancellation_probe.cancel_ms = now_ms()
++  assert(handle:cancel("benchmark"))
++  assert(vim.wait(5000, function() return cancellation_probe.exit_ms ~= nil end, 1), "cancelled rg process was not reaped")
++  cancellation_ms[#cancellation_ms + 1] = cancellation_probe.exit_ms - cancellation_probe.cancel_ms
++  assert(cancel_provider:status().active_requests == 0, "cancelled request remained active")
++end
++cancel_provider:dispose()
++
++local output = {
++  nvim = vim.version().major .. "." .. vim.version().minor .. "." .. vim.version().patch,
++  rg = vim.fn.system({ "rg", "--version" }):match("[^\r\n]+"),
++  fixture = fixture,
++  fixture_tier = "normal",
++  fixture_files = 10000,
++  fixture_content_bytes = 20480000,
++  query = "payload= (fixed string)",
++  cache = repetitions .. " sequential warm searches and cancellation runs; no debounce included",
++  repetitions = repetitions,
++  first_batch = summary(first_batch_ms),
++  completion = summary(completion_ms),
++  cancellation_to_process_exit = summary(cancellation_ms),
++  maximum_items = max_item_count,
++  maximum_accounted_result_bytes = max_result_bytes,
++  maximum_pending_output_bytes = max_pending_bytes,
++  lua_heap_after_completion_kib = max_lua_kib,
++  statuses = full_status_counts,
++  limit_reasons = limit_reasons,
++  limits = post_search_inventory.limits,
++}
++print(vim.json.encode(output))
++vim.cmd("qa!")
+
+diff --git a/bench/measure_rg_provider.py b/bench/measure_rg_provider.py
+new file mode 100644
+index 0000000..5324f3d
+--- /dev/null
++++ b/bench/measure_rg_provider.py
+@@ -0,0 +1,82 @@
++#!/usr/bin/env python3
++"""Run the local rg-provider performance probe and sample Neovim RSS."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import subprocess
++import time
++from pathlib import Path
++from typing import Any
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def sample_process_tree_rss(pid: int) -> int:
++    result = subprocess.run(
++        ["ps", "-Ao", "pid=,ppid=,rss="],
++        check=False,
++        text=True,
++        capture_output=True,
++    )
++    total = 0
++    for line in result.stdout.splitlines():
++        fields = line.split()
++        if len(fields) < 3:
++            continue
++        try:
++            process_id, parent_id, resident_kib = map(int, fields[:3])
++        except ValueError:
++            continue
++        if process_id == pid or parent_id == pid:
++            total += resident_kib
++    return total
++
++
++def run(nvim: str, fixture: Path, repetitions: int) -> dict[str, Any]:
++    environment = os.environ.copy()
++    environment["WB09_FIXTURE"] = str(fixture.resolve())
++    environment["WB09_REPETITIONS"] = str(repetitions)
++    command = [nvim, "--clean", "--headless", "-u", "NONE", "-l", str(ROOT / "bench" / "rg_provider.lua")]
++    process = subprocess.Popen(command, cwd=ROOT, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++    peak_rss = 0
++    while process.poll() is None:
++        peak_rss = max(peak_rss, sample_process_tree_rss(process.pid))
++        time.sleep(0.1)
++    stdout, stderr = process.communicate(timeout=5)
++    if process.returncode != 0:
++        raise RuntimeError(f"rg provider benchmark failed ({process.returncode}):\n{stderr}\n{stdout}")
++    all_lines = [line for line in (stdout + "\n" + stderr).splitlines() if line.strip()]
++    output_index = next((index for index in range(len(all_lines) - 1, -1, -1) if all_lines[index].startswith("{")), None)
++    if output_index is None:
++        raise RuntimeError(f"rg provider benchmark printed no JSON result:\n{stderr}")
++    result = json.loads(all_lines[output_index])
++    result["nvim_executable"] = nvim
++    result["nvim_and_rg_peak_rss_kib"] = peak_rss
++    result["rss_sampling_interval_ms"] = 100
++    result["stderr"] = "\n".join(line for index, line in enumerate(all_lines) if index != output_index)
++    return result
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--nvim", required=True)
++    parser.add_argument("--fixture", type=Path, required=True)
++    parser.add_argument("--repetitions", type=int, default=20)
++    parser.add_argument("--output", type=Path)
++    args = parser.parse_args()
++    result = run(args.nvim, args.fixture, args.repetitions)
++    rendered = json.dumps(result, indent=2) + "\n"
++    if args.output:
++        destination = args.output if args.output.is_absolute() else ROOT / args.output
++        destination.parent.mkdir(parents=True, exist_ok=True)
++        destination.write_text(rendered, encoding="utf-8")
++    print(rendered, end="")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

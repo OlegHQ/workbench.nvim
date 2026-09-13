@@ -1,0 +1,76 @@
+{
+  "task": "WB-08",
+  "revision": "Dirty workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a; WB-08 implementation is uncommitted and unpublished.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 (minimum) and 0.12.4 (host/current); Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1. Runtime tests ran headless on both versions; UI gates used isolated Neovim processes with real RPC grids.",
+  "summary": "Implemented bounded streamed results and resumable view sessions, read-only preview over loaded/unsaved buffers or bounded asynchronous file reads, safe open/back navigation with native jumplist behavior, and explicit immutable quickfix snapshot export. UI preview content is isolated in owned nofile buffers, escapes terminal controls, and exposes loading/error states. Result, navigation, preview and export behavior is covered by runtime, integration, stress, benchmark and real-grid acceptance tests. No workbench service was added to the startup path.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; git diff --check",
+      "result": "Ownership validation passed for all 18 workbench Lua modules and the reviewed dynamic-require allowlist. Results and navigation services own bounded model/history state; the preview view depends only on core display-resource helpers and an injected navigation service; the quickfix adapter is explicit and does not enter runtime service/UI imports. WB-08 changes stay within its declared service, UI, adapter, tests, Makefile and documentation/evidence paths. No hosted CI or runtime dependency was added.",
+      "artifacts": [
+        "tests/check_ownership.py",
+        "lua/workbench/services/results.lua",
+        "lua/workbench/services/navigation.lua",
+        "lua/workbench/ui/preview.lua",
+        "lua/workbench/adapters/quickfix.lua",
+        "docs/CONTRACTS.md"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration; python3 scripts/check_plan.py",
+      "result": "All 51 mini.test cases passed on Neovim 0.11.7 and 0.12.4; the 12 WB-08 cases cover bounded/stable streaming, selection fallback and session resume, terminal/cancel states, modified-buffer preview, range preflight, split/tab navigation, native jumplist return, stale callback disposal and quickfix-history preservation. All 21 Python integration tests passed and the plan structure checker passed.",
+      "artifacts": [
+        "tests/runtime/test_results_navigation.lua",
+        "tests/runtime/run.lua",
+        "tests/test_harness_tools.py",
+        "tests/test_plan.py",
+        "scripts/check_plan.py"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; make test-ui",
+      "result": "Repeated preview churn invalidates old requests and rejects late callbacks; disposal leaves zero pending reads, active previews and navigation entries. Runtime tests completed 100 preview-window open/close cycles with all 100 owned buffers released and the modified user buffer/window state preserved. All eight final real-grid runs also closed/disposed the preview and navigation service with no pending reads or open view resources; native Ctrl-O and return-to-origin preserved the edited source.",
+      "artifacts": [
+        "tests/runtime/test_results_navigation.lua",
+        "tests/e2e/wb08_navigation.py",
+        ".test-output/e2e/wb08/20260912T174919Z-160x50-3e314b/result.json",
+        ".test-output/e2e/wb08/20260912T174927Z-160x50-801c2e/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "make test-ui (Neovim 0.11.7 and 0.12.4; 160x50, 120x35, 80x24 and 60x20)",
+      "result": "All eight actual RPC UI grids passed. Preview used vertical layout at 120/160 columns and horizontal layout at 60/80 columns; the selected context was visible while editor focus remained on the modified source. Loading and concise actionable read-error states were asserted in each real grid, then the source preview was restored. Preview loaded neither the target file buffer nor an LSP client and added no jumplist entry; opening added exactly one entry and native Ctrl-O returned to the original edit. First preview view measured 2.348–3.016ms across the final matrix.",
+      "artifacts": [
+        "tests/e2e/wb08_navigation.py",
+        ".test-output/e2e/wb08/20260912T174919Z-160x50-3e314b/result.json",
+        ".test-output/e2e/wb08/20260912T174919Z-120x35-6359fa/result.json",
+        ".test-output/e2e/wb08/20260912T174920Z-80x24-6c28df/result.json",
+        ".test-output/e2e/wb08/20260912T174920Z-60x20-8173f6/result.json",
+        ".test-output/e2e/wb08/20260912T174927Z-160x50-801c2e/result.json",
+        ".test-output/e2e/wb08/20260912T174927Z-120x35-c173f4/result.json",
+        ".test-output/e2e/wb08/20260912T174927Z-80x24-8a2dcf/result.json",
+        ".test-output/e2e/wb08/20260912T174927Z-60x20-bd87f0/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "make bench-results; .test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim",
+      "result": "On 0.11.7 / 0.12.4 respectively, 10k-item ingestion was 7.651/7.866ms; cached selection p50/p95 was 0.042/0.208µs and 0.042/0.125µs; 100-item page reads were 27.417/58.167µs and 31.583/41.959µs. Full defensive 10k snapshots were 2.325/4.877ms and 2.635/5.173ms; the full-copy path is explicit, while interactive reads remain bounded. One hundred view-session cycles retained only the active session. Twenty interleaved host startup runs measured marker p50/p95 43.515/44.505ms versus the pre-WB-08 43.560/44.205ms baseline (−0.045/+0.300ms), under the 150ms budget and 10ms investigation threshold. No workbench module appeared among startup profile rows over 5ms; the services remain lazy-loaded.",
+      "artifacts": [
+        "tests/bench_results.lua",
+        ".test-output/bench/wb08/results-20260912.txt",
+        ".bench-output/startup/20260912T174622Z-baseline-d4814f/baseline.json",
+        ".bench-output/startup/20260912T164116Z-baseline-7645b8/baseline.json"
+      ]
+    }
+  ]
+}

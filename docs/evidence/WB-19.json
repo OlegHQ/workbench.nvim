@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "task": "WB-19",
+  "revision": "Workbench HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the cumulative dirty WB-01..WB-18 tree and the tested WB-19 changes; docs/evidence/WB-19.workbench.diff records the focused WB-18-to-WB-19 delta. Autoconf HEAD 5a87cf0b40b43705357db892a1b07a40d418363c plus the WB-02 baseline and tested WB-19 integration; docs/evidence/WB-19.autoconf.diff records that focused cross-repository delta. No commits or pushes were made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; minimum Neovim 0.11.7 and current/host Neovim 0.12.4; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1. Linux was unavailable locally.",
+  "summary": "Implemented strict Workbench settings validation/defaults, source-layer provenance and replacement, workspace/session/buffer override policy with disposal, config snapshots/restore, and an explicit read-only save refusal. Added checked completion/format-on-save/inline-diagnostics actions backed by registered host adapters. Autoconf now translates only declared kebab-case editor.workbench TOML keys, applies source-replacement atomically, reports nested/list schema health, and provides live getters/setters for the real editor state. Repeated resolution retains one registration per adapter; unsupported standalone adapters stay visible and unavailable. No root host default, keymap, runtime pin, or TOML configuration was changed.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-19 allowed paths and the focused WB-18/WB-02 baseline diffs",
+      "result": "Ownership validation passed for all 33 Workbench Lua modules. Workbench implementation and tests stay in WB-19's allowed lua/workbench/, tests/, and Makefile paths; Autoconf changes stay in lua/autoconf/sys/ and tests/. Workbench owns schema/provenance/actions while Autoconf owns TOML translation and host feature adapters. No host defaults or Nix/runtime wiring changed.",
+      "artifacts": [
+        "docs/evidence/WB-19.workbench.diff",
+        "docs/evidence/WB-19.autoconf.diff",
+        "docs/tasks.json",
+        "Makefile",
+        "tests/check_ownership.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; sh ../autoconf.nvim/tests/run.sh",
+      "result": "All 123 Workbench mini.test cases passed on Neovim 0.11.7 and 0.12.4. The six settings cases cover false/list preservation, schema/range/unknown-key errors, source provenance and replacement, override precedence and disallowed scopes, snapshots/restore, invalid setup atomicity, unavailable adapters, setter rollback, read-only save refusal, and disposal. Autoconf feature/integration/optional-dependency tests passed on both Neovim versions.",
+      "artifacts": [
+        "tests/runtime/test_settings.lua",
+        "tests/runtime/test_core_actions.lua",
+        "tests/e2e/wb19_settings.py",
+        "docs/evidence/WB-19.autoconf.diff"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect the repeated Autoconf setup, adapter rollback, invalid configuration, and disposal assertions in the Workbench and Autoconf integration suites",
+      "result": "Three consecutive TOML resolutions retain exactly three adapter ownership entries and preserve the live editor values. Unknown nested TOML does not partially apply; replacing the TOML source restores omitted settings to their default or lower-precedence source provenance. Failed host setters restore the prior requested/effective value. Format toggles preserve the sibling BufWritePre hook, and disposal removes only the settings/palette resources while Search remains active.",
+      "artifacts": [
+        "tests/runtime/test_settings.lua",
+        "docs/evidence/WB-19.autoconf.diff"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb19_settings.py --grid-sizes 120x35 --nvim .test-deps/neovim-0.11.7/bin/nvim; repeat with --nvim nvim",
+      "result": "The real RPC/ext_linegrid UI test passed on minimum and host Neovim. It opens the action palette, confirms the standalone adapter reason, then uses keyboard filtering and Enter to toggle completion, formatting, and diagnostics through the shared registry. Effective values changed, the checked state rendered, user focus returned, the unrelated Search view stayed mounted, and settings cleanup left no palette view. Results are retained in .test-output/e2e/wb19/20260913T031543Z-120x35-807748 and 20260913T031543Z-120x35-925cfa.",
+      "artifacts": [
+        "tests/e2e/wb19_settings.py",
+        ".test-output/e2e/wb19/20260913T031543Z-120x35-807748/result.json",
+        ".test-output/e2e/wb19/20260913T031543Z-120x35-925cfa/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "nvim --headless --startuptime /tmp/wb19-startup-final-20260913.log -c 'qa!'; inspect Workbench action timings in both WB-19 RPC UI result.json files",
+      "result": "Host startup reached NVIM STARTED at 46.636 ms, below the 150 ms budget; importing the registered editor.workbench resolver took 0.182 ms. The opt-in Workbench remains lazy when absent from host configuration. Input-to-effective-state latency for the three settings actions measured 1.995–2.813 ms on Neovim 0.11.7 and 2.371–4.553 ms on 0.12.4, below the 150 ms interaction budget.",
+      "artifacts": [
+        "docs/evidence/WB-19-startup.txt",
+        "tests/e2e/wb19_settings.py",
+        ".test-output/e2e/wb19/20260913T031543Z-120x35-807748/result.json",
+        ".test-output/e2e/wb19/20260913T031543Z-120x35-925cfa/result.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make check-ownership test-integration; sh ../autoconf.nvim/tests/run.sh; NVIM_BIN=$(command -v nvim) sh ../autoconf.nvim/tests/host.sh",
+      "result": "Ownership checks passed for 33 Workbench modules; all 21 Python plan/harness integration tests passed and scripts/check_plan.py reported a valid graph. Autoconf's full test and workbench adapter suite passed on Neovim 0.11.7 and 0.12.4; the host integration passed on 0.12.4 and observed real completion, formatting-hook, and diagnostic Neovim state. Checks ran on macOS; Linux was unavailable.",
+      "artifacts": [
+        "tests/check_ownership.py",
+        "tests/test_plan.py",
+        "scripts/check_plan.py",
+        "docs/evidence/WB-19.autoconf.diff"
+      ]
+    }
+  ]
+}

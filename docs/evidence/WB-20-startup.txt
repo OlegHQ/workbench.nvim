@@ -1,0 +1,27 @@
+WB-20 startup/performance record
+Date: 2026-09-13
+Host: macOS 26.4.1 arm64, Macmini9,1; Neovim 0.12.4
+
+Historical comparison:
+  WB-19 final host startup marker: 46.636 ms (one fresh start, docs/evidence/WB-19-startup.txt)
+
+Controlled current sample:
+  Command: .test-deps/venv/bin/python bench/startup.py --runs 5 --nvim nvim
+  Report: .bench-output/startup/20260913T035503Z-baseline-4f46a1/baseline.json
+  Host startup marker p50/p95: 45.147 / 50.366 ms (5 interleaved runs)
+  Host first RPC frame p50/p95: 58.260 / 59.916 ms
+  Host first-input state p50/p95: 1.829 / 1.950 ms
+  Plugin-free startup marker p50/p95: 8.567 / 8.940 ms
+
+No Git provider/controller/view module appears in the startup profile: WB-20 is
+loaded only when a Git view is explicitly created. Existing profile rows over
+5 ms were vim.lsp, themekit.commands.apply, and Autoconf's plugin init; none
+were introduced by WB-20. The single fresh profile marker
+/tmp/wb20-startup-final-20260913.log was 72.564 ms, an outlier relative to the
+interleaved distribution and still below the 150 ms host limit.
+
+Real-grid first selected-diff latency across Neovim 0.11.7 and 0.12.4, four
+terminal sizes (160x50, 120x35, 80x24, 60x20): 17.069–23.257 ms. Each run used
+two Git processes for repository identity/status, zero additional processes
+while moving the cursor, and one process for the explicit selected-file diff.
+See the WB-20 RPC result.json artifacts listed in docs/evidence/WB-20.json.

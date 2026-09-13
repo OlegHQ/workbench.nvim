@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "task": "WB-24",
+  "revision": "Workbench HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the pre-existing dirty WB-01..WB-23 tree and tested WB-24 changes; ThemeKit HEAD d023de449b4d906154975b3d180cfff70f75ba3c plus tested WB-24 mappings/tests. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6; mini.test 0.16.0; pynvim 0.6.0; msgpack 1.1.1. Real host themes github_light and dark_high_contrast were copied into isolated XDG config directories for test runs. Linux was unavailable locally and remains unverified.",
+  "summary": "Added color-free Workbench semantic default links and rendered Normal, Selection, Muted, Border, Directory, Match, Error, Warning, Info, GitAdded, GitModified, GitDeleted, Disabled and Loading roles. ThemeKit maps existing Helix-compatible heading, UI, selection, diagnostic and diff tokens to those groups; no RGB values or new runtime dependencies were added to Workbench. Real Files views switch between actual light and dark themes in place without provider re-enumeration, selection loss or focus movement. Actual ext_linegrid checks cover split and overlay layouts, truncation, keyboard and mouse reachability, text-only states, no icon glyphs, monochrome fallback and the no-RGB UI capability. Repeated view disposal leaves no layout resources.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "Review docs/tasks.json#WB-24, lua/workbench/ui/view.lua and ThemeKit handler mapping ownership; make check-ownership",
+      "result": "WB-24 owned paths were claimed before implementation. Workbench UI remains the sole owner of view projection and highlight application; ThemeKit contributes static Helix-token mappings and owns no Workbench state. The view adds no autocommands, timers or provider dependencies. Existing buffer/mapping/window resources remain owned by the view/layout scopes and are disposed idempotently. No root config, Nix file, plugin entrypoint, Autoconf adapter or unrelated worktree changes were made for this task. Workbench import ownership validation passed for 38 Lua modules.",
+      "artifacts": [
+        "docs/tasks.json",
+        "lua/workbench/ui/view.lua",
+        "tests/runtime/test_ui_theming.lua",
+        "tests/e2e/wb24_theming.py",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; tests/e2e/wb24_theming.py on minimum/current Neovim",
+      "result": "All 160 mini.test cases passed on Neovim 0.11.7 and 0.12.4. A focused runtime test confirms the standalone default semantic groups remain links to standard Neovim groups and contain no hardcoded colors when ThemeKit is absent. The real-grid test loads ThemeKit mappings and actual github_light/dark_high_contrast TOML themes, verifies accessible selection foreground/background contrast (4.69:1 light, 14.99:1 dark), and confirms loading/error/unavailable text plus the disabled-row highlight.",
+      "artifacts": [
+        "tests/runtime/test_ui_theming.lua",
+        "tests/e2e/wb24_theming.py",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "tests/e2e/wb24_theming.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim <Neovim 0.11.7 or 0.12.4>; make test-ui NVIM_CURRENT=nvim",
+      "result": "The actual Files controller/provider view was opened, themed twice and closed/reopened three times at each grid size on both runtimes. Theme switches retained the same rendered view generation, selection and focused window; the filesystem provider enumerated exactly once per editor. Each final layout ended with zero active views/resources and the editor cwd remained unchanged.",
+      "artifacts": [
+        "tests/e2e/wb24_theming.py",
+        ".test-output/e2e/wb24/20260913T064322Z-160x50-fd623a/result.json",
+        ".test-output/e2e/wb24/20260913T064322Z-120x35-19aebd/result.json",
+        ".test-output/e2e/wb24/20260913T064322Z-80x24-fdb4e6/result.json",
+        ".test-output/e2e/wb24/20260913T064322Z-60x20-c00246/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-160x50-2129b2/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-120x35-46c79f/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-80x24-27f30c/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-60x20-30ffed/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "tests/e2e/wb24_theming.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim <Neovim 0.11.7 or 0.12.4>; inspect captured light-grid.json/dark-grid.json",
+      "result": "UX-09 passed in actual Neovim ext_linegrid grids. At 160x50 and 120x35 the Files view used a split; 80x24 and 60x20 used an overlay. A long wide-character filename truncated with an ellipsis, keyboard movement and mouse selection reached the intended rows, and focus remained in the view. Light/dark selection contrast was 4.69:1 / 14.99:1. Loading, Error and Unavailable states were text-labelled; the disabled row retained its semantic extmark after colors were reduced to monochrome cterm attributes. No private-use icon glyphs appeared. The 80x24 UI attached with RGB capability disabled on both Neovim versions.",
+      "artifacts": [
+        ".test-output/e2e/wb24/20260913T064322Z-160x50-fd623a/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064322Z-160x50-fd623a/dark-grid.json",
+        ".test-output/e2e/wb24/20260913T064322Z-120x35-19aebd/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064322Z-120x35-19aebd/dark-grid.json",
+        ".test-output/e2e/wb24/20260913T064322Z-80x24-fdb4e6/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064322Z-80x24-fdb4e6/dark-grid.json",
+        ".test-output/e2e/wb24/20260913T064322Z-60x20-c00246/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064322Z-60x20-c00246/dark-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-160x50-2129b2/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-160x50-2129b2/dark-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-120x35-46c79f/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-120x35-46c79f/dark-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-80x24-27f30c/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-80x24-27f30c/dark-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-60x20-30ffed/light-grid.json",
+        ".test-output/e2e/wb24/20260913T064327Z-60x20-30ffed/dark-grid.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Compare docs/evidence/WB-06.json with current minimum/current `tests/bench_ui.lua` runs; inspect the eight final WB-24 grid results",
+      "result": "Compared with the pre-WB-24 UI microbenchmark, warm 20-item mount/close p95 was 3.201 ms on 0.11.7 (previously 2.937 ms) and 2.645 ms on 0.12.4 (previously 3.044 ms); both remain below the 8 ms budget. Cold require+mount measured 6.818 / 6.067 ms versus 4.871 / 5.217 ms before, an increase of 1.947 / 0.850 ms that remains below the 50 ms first-shell target. One hundred repeated cycles ended with zero resources. Across the final eight real-grid cases, theme apply calls measured 1.299–1.758 ms, view setup 21.036–25.015 ms, and initial grid frame 20.077–27.843 ms. This UI-only change does not modify init/plugin entrypoints or startup autocommands; no new paired host-startup claim is made.",
+      "artifacts": [
+        "docs/evidence/WB-24-bench.txt",
+        "docs/evidence/WB-06.json",
+        "tests/bench_ui.lua",
+        ".test-output/e2e/wb24/20260913T064322Z-160x50-fd623a/result.json",
+        ".test-output/e2e/wb24/20260913T064322Z-120x35-19aebd/result.json",
+        ".test-output/e2e/wb24/20260913T064322Z-80x24-fdb4e6/result.json",
+        ".test-output/e2e/wb24/20260913T064322Z-60x20-c00246/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-160x50-2129b2/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-120x35-46c79f/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-80x24-27f30c/result.json",
+        ".test-output/e2e/wb24/20260913T064327Z-60x20-30ffed/result.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; make check-ownership test-integration; make test-ui NVIM_CURRENT=nvim; tests/e2e/wb24_theming.py on minimum/current Neovim",
+      "result": "Minimum/current Neovim runtime tests, focused theme grids and the broader local UI acceptance passed on macOS. ThemeKit integration was exercised with actual parsed themes and the ThemeKit mapping probe. Standalone Workbench behavior without ThemeKit is covered by the default-link runtime test. WB-24 does not add or enable an Autoconf host adapter or alter Nix; those host rollout paths are owned by WB-25. Linux was unavailable and remains unverified; no Linux pass is claimed.",
+      "artifacts": [
+        "Makefile",
+        "tests/runtime/test_ui_theming.lua",
+        "tests/e2e/wb24_theming.py",
+        "tests/check_ownership.py",
+        "tests/test_plan.py",
+        "docs/tasks.json"
+      ]
+    }
+  ]
+}

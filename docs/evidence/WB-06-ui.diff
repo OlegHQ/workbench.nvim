@@ -1,0 +1,1905 @@
+diff --git a/lua/workbench/ui/projection.lua b/lua/workbench/ui/projection.lua
+new file mode 100644
+index 0000000..ab74502
+--- /dev/null
++++ b/lua/workbench/ui/projection.lua
+@@ -0,0 +1,140 @@
++local M = {}
++
++local DEFAULT_LIMIT = 4096
++
++local function normalize(items, tree)
++  if type(items) ~= "table" then return nil, "projection items must be an array" end
++  local count, maximum = 0, 0
++  for key in pairs(items) do
++    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then return nil, "projection items must be a dense array" end
++    count = count + 1
++    maximum = math.max(maximum, key)
++  end
++  if count ~= maximum then return nil, "projection items must be a dense array" end
++  local by_id = {}
++  for index, item in ipairs(items) do
++    if type(item) ~= "table" or type(item.id) ~= "string" or item.id == "" then
++      return nil, "projection item " .. index .. " must have a stable non-empty id"
++    end
++    if by_id[item.id] then return nil, "duplicate projection id: " .. item.id end
++    if type(item.label) ~= "string" then return nil, "projection item " .. item.id .. " must have a label" end
++    if item.parent_id ~= nil and type(item.parent_id) ~= "string" then
++      return nil, "projection parent_id must be a string"
++    end
++    by_id[item.id] = item
++  end
++
++  local children
++  if tree then
++    children = {}
++    for _, node in ipairs(items) do
++      if node.parent_id and by_id[node.parent_id] then
++        local siblings = children[node.parent_id]
++        if not siblings then siblings = {}; children[node.parent_id] = siblings end
++        siblings[#siblings + 1] = node
++      end
++    end
++
++    -- A malformed parent cycle must not make a tree disappear silently.
++    local state, path, path_length = {}, {}, 0
++    for _, node in ipairs(items) do
++      local current = node
++      while current do
++        local id = current.id
++        if state[id] == 2 then break end
++        if state[id] == 1 then return nil, "projection contains a parent cycle at " .. id end
++        state[id] = 1
++        path_length = path_length + 1
++        path[path_length] = id
++        current = current.parent_id and by_id[current.parent_id] or nil
++      end
++      for index = path_length, 1, -1 do state[path[index]] = 2; path[index] = nil end
++      path_length = 0
++    end
++  end
++  return items, by_id, children
++end
++
++local function row_for(node, depth, child_count)
++  return {
++    id = node.id,
++    label = node.label,
++    detail = type(node.detail) == "string" and node.detail or nil,
++    kind = type(node.kind) == "string" and node.kind or "item",
++    parent_id = node.parent_id,
++    depth = depth,
++    has_children = child_count > 0,
++    selectable = node.selectable ~= false,
++    payload = node.payload,
++  }
++end
++
++function M.list(items, limit)
++  local nodes, err = normalize(items, false)
++  if not nodes then return nil, err end
++  limit = type(limit) == "number" and math.max(1, math.floor(limit)) or DEFAULT_LIMIT
++  local rows = {}
++  local count = math.min(#nodes, limit)
++  for index = 1, count do rows[index] = row_for(nodes[index], 0, 0) end
++  return rows, { truncated = #nodes > count, total = #nodes }
++end
++
++function M.tree(items, expanded, limit)
++  local nodes, by_id, children = normalize(items, true)
++  if not nodes then return nil, by_id end
++  expanded = type(expanded) == "table" and expanded or {}
++  limit = type(limit) == "number" and math.max(1, math.floor(limit)) or DEFAULT_LIMIT
++
++  local roots = {}
++  for _, node in ipairs(nodes) do
++    if not node.parent_id or not by_id[node.parent_id] then roots[#roots + 1] = node end
++  end
++
++  local rows, stack = {}, {}
++  for index = #roots, 1, -1 do stack[#stack + 1] = { node = roots[index], depth = 0 } end
++  while #stack > 0 and #rows < limit do
++    local current = stack[#stack]
++    stack[#stack] = nil
++    local descendants = children[current.node.id] or {}
++    rows[#rows + 1] = row_for(current.node, current.depth, #descendants)
++    local is_expanded = expanded[current.node.id]
++    if #descendants > 0 and is_expanded ~= false then
++      for index = #descendants, 1, -1 do
++        stack[#stack + 1] = { node = descendants[index], depth = current.depth + 1 }
++      end
++    end
++  end
++  return rows, { truncated = #stack > 0, total = #nodes }
++end
++
++function M.reconcile_selection(rows, selected_id, previous_rows)
++  if type(rows) ~= "table" or #rows == 0 then return nil end
++  local new_index, new_by_id = {}, {}
++  for index, row in ipairs(rows) do new_index[row.id] = index; new_by_id[row.id] = row end
++  if selected_id and new_index[selected_id] then return selected_id end
++
++  local previous_index, old_by_id = {}, {}
++  for index, row in ipairs(previous_rows or {}) do previous_index[row.id] = index; old_by_id[row.id] = row end
++  local old = selected_id and old_by_id[selected_id]
++  if old then
++    local peers = {}
++    for index, row in ipairs(previous_rows) do
++      if row.parent_id == old.parent_id and new_by_id[row.id] then peers[#peers + 1] = { id = row.id, old_index = index } end
++    end
++    table.sort(peers, function(left, right) return left.old_index < right.old_index end)
++    local old_position = previous_index[selected_id]
++    for _, peer in ipairs(peers) do if peer.old_index > old_position then return peer.id end end
++    for index = #peers, 1, -1 do if peers[index].old_index < old_position then return peers[index].id end end
++    local parent = old.parent_id
++    while parent do
++      if new_index[parent] then return parent end
++      local previous_parent = old_by_id[parent]
++      parent = previous_parent and previous_parent.parent_id or nil
++    end
++  end
++
++  for _, row in ipairs(rows) do if row.selectable then return row.id end end
++  return rows[1].id
++end
++
++return M
+
+diff --git a/lua/workbench/ui/view.lua b/lua/workbench/ui/view.lua
+new file mode 100644
+index 0000000..1f29e73
+--- /dev/null
++++ b/lua/workbench/ui/view.lua
+@@ -0,0 +1,439 @@
++local Projection = require("workbench.ui.projection")
++
++local M = {}
++local View = {}
++View.__index = View
++
++local next_buffer_id = 0
++local highlight_namespace
++local MAX_PROJECTED_ITEMS = 20000
++local HIGHLIGHTS = {
++  WorkbenchTitle = "Title",
++  WorkbenchItem = "Normal",
++  WorkbenchSelection = "CursorLine",
++  WorkbenchHelp = "Comment",
++  WorkbenchError = "ErrorMsg",
++  WorkbenchDetail = "NonText",
++}
++
++local function set_highlights()
++  for name, target in pairs(HIGHLIGHTS) do
++    pcall(vim.api.nvim_set_hl, 0, name, { link = target, default = true })
++  end
++end
++
++local function display_width(text)
++  local ok, width = pcall(vim.fn.strdisplaywidth, text)
++  return ok and width or #text
++end
++
++local function truncate_cells(value, width)
++  width = math.max(0, width)
++  local text = vim.fn.strtrans(value)
++  if display_width(text) <= width then return text end
++  if width == 0 then return "" end
++  local suffix = width == 1 and "…" or "…"
++  local budget = math.max(0, width - display_width(suffix))
++  local count = vim.fn.strchars(text)
++  local low, high = 0, count
++  while low < high do
++    local middle = math.floor((low + high + 1) / 2)
++    local prefix = vim.fn.strcharpart(text, 0, middle, true)
++    if display_width(prefix) <= budget then low = middle else high = middle - 1 end
++  end
++  return vim.fn.strcharpart(text, 0, low, true) .. suffix
++end
++
++local function status_lines(model)
++  if model.status == "loading" or model.status == "running" then return { "Loading…" }, "WorkbenchHelp" end
++  if model.status == "error" then
++    local message = type(model.error) == "table" and model.error.message or model.error
++    return { "Error: " .. tostring(message or "operation failed") }, "WorkbenchError"
++  end
++  if model.status == "empty" or model.status == "ready" then return { "No items" }, "WorkbenchHelp" end
++  if model.status == "idle" then return { "Not started" }, "WorkbenchHelp" end
++  return { "Unavailable: " .. tostring(model.reason or "unsupported state") }, "WorkbenchError"
++end
++
++local function valid_model(model)
++  if type(model) ~= "table" then return nil, "view model must be a table" end
++  if model.status ~= nil and type(model.status) ~= "string" then return nil, "view status must be a string" end
++  if model.items ~= nil and type(model.items) ~= "table" then return nil, "view items must be an array" end
++  return true
++end
++
++local function is_ready(model)
++  return model.status == nil or model.status == "ready"
++end
++
++local function index_rows(rows)
++  local index = {}
++  for position, row in ipairs(rows) do index[row.id] = position end
++  return index
++end
++
++function M.new(opts)
++  opts = opts or {}
++  if type(opts.scope) ~= "table" or type(opts.scope.defer) ~= "function" then
++    return nil, { code = "invalid_scope", message = "view requires an owned disposable scope" }
++  end
++  if type(opts.id) ~= "string" or opts.id == "" then
++    return nil, { code = "invalid_view", message = "view requires a stable id" }
++  end
++  local okay, err = valid_model(opts.model or {})
++  if not okay then return nil, { code = "invalid_view", message = err } end
++
++  next_buffer_id = next_buffer_id + 1
++  local buffer = vim.api.nvim_create_buf(false, true)
++  local view = setmetatable({
++    id = opts.id,
++    title = type(opts.title) == "string" and opts.title or opts.id,
++    kind = opts.kind == "list" and "list" or "tree",
++    scope = opts.scope,
++    buffer = buffer,
++    window = nil,
++    placement = opts.placement == "results" and "results" or "sidebar",
++    on_select = opts.on_select,
++    on_close = opts.on_close,
++    selected_id = opts.selected_id,
++    expanded = vim.deepcopy(opts.expanded or {}),
++    model = vim.deepcopy(opts.model or { status = "ready", items = {} }),
++    rows = {},
++    row_index = {},
++    projection_info = { truncated = false, total = 0 },
++    visible_rows = {},
++    row_by_line = {},
++    scroll_offset = 0,
++    help_visible = false,
++    closed = false,
++    render_error = nil,
++    mode = nil,
++    render_generation = 0,
++    render_ticket = nil,
++  }, View)
++
++  vim.api.nvim_buf_set_name(buffer, string.format("workbench://view/%s/%d", opts.id:gsub("[^%w_.-]", "_"), next_buffer_id))
++  vim.bo[buffer].buftype = "nofile"
++  vim.bo[buffer].bufhidden = "hide"
++  vim.bo[buffer].buflisted = false
++  vim.bo[buffer].swapfile = false
++  vim.bo[buffer].modifiable = false
++  vim.bo[buffer].filetype = "workbench"
++  local _, buffer_error = opts.scope:defer(function()
++    if vim.api.nvim_buf_is_valid(buffer) then pcall(vim.api.nvim_buf_delete, buffer, { force = true }) end
++  end, "view-buffer:" .. opts.id, "buffer")
++  if buffer_error then
++    pcall(vim.api.nvim_buf_delete, buffer, { force = true })
++    return nil, { code = buffer_error.code or "scope_disposed", message = buffer_error.message }
++  end
++
++  view:_install_interactions()
++  set_highlights()
++  view:update(opts.model or { status = "ready", items = {} })
++  return view
++end
++
++function View:_install_interactions()
++  local view, buffer, scope = self, self.buffer, self.scope
++  local mappings = {
++    q = function() view:close() end,
++    j = function() view:move(1) end,
++    ["<Down>"] = function() view:move(1) end,
++    k = function() view:move(-1) end,
++    ["<Up>"] = function() view:move(-1) end,
++    ["<CR>"] = function() view:activate() end,
++    ["<Space>"] = function() view:toggle_expanded() end,
++    ["?"] = function() view:toggle_help() end,
++  }
++  for key, callback in pairs(mappings) do
++    vim.keymap.set("n", key, callback, { buffer = buffer, silent = true, nowait = true, desc = "Workbench " .. key })
++    scope:defer(function()
++      if vim.api.nvim_buf_is_valid(buffer) then pcall(vim.keymap.del, "n", key, { buffer = buffer }) end
++    end, "view-mapping:" .. self.id .. ":" .. key, "mapping")
++  end
++
++  local group = vim.api.nvim_create_augroup("WorkbenchView" .. tostring(buffer), { clear = true })
++  vim.api.nvim_create_autocmd("CursorMoved", {
++    group = group,
++    buffer = buffer,
++    callback = function() view:_sync_selection() end,
++  })
++  scope:defer(function() pcall(vim.api.nvim_del_augroup_by_id, group) end, "view-cursor-autocmd:" .. self.id, "autocmd")
++end
++
++function View:_format_row(row, width)
++  local indent = string.rep("  ", math.min(row.depth or 0, 24))
++  local marker = row.has_children and (self.expanded[row.id] == false and "> " or "v ") or "  "
++  local text = indent .. marker .. row.label
++  if row.detail and width > 16 then text = text .. "  " .. row.detail end
++  return truncate_cells(text, width)
++end
++
++function View:_content_width()
++  if self.window and vim.api.nvim_win_is_valid(self.window) then
++    local ok, width = pcall(vim.api.nvim_win_get_width, self.window)
++    if ok then return math.max(8, width - 2) end
++  end
++  return math.max(8, vim.o.columns - 4)
++end
++
++function View:_project()
++  local rows, info
++  if self.kind == "list" then
++    rows, info = Projection.list(self.model.items or {}, MAX_PROJECTED_ITEMS)
++  else
++    rows, info = Projection.tree(self.model.items or {}, self.expanded, MAX_PROJECTED_ITEMS)
++  end
++  if not rows then return nil, info end
++  return rows, info
++end
++
++function View:_ensure_selection_visible()
++  if #self.rows == 0 then self.scroll_offset = 0; return end
++  local selected_index = self.row_index[self.selected_id]
++  if not selected_index then self.scroll_offset = 0; return end
++  local height = self.window and vim.api.nvim_win_is_valid(self.window) and vim.api.nvim_win_get_height(self.window) or vim.o.lines - 2
++  local help_rows = self.help_visible and 4 or 0
++  local capacity = math.max(1, height - help_rows - 4)
++  if selected_index <= self.scroll_offset then self.scroll_offset = selected_index - 1
++  elseif selected_index > self.scroll_offset + capacity then self.scroll_offset = selected_index - capacity end
++  self.scroll_offset = math.max(0, math.min(self.scroll_offset, math.max(0, #self.rows - capacity)))
++end
++
++function View:update(model)
++  if self.closed then return nil, { code = "view_closed", message = "view is closed" } end
++  local okay, validation_error = valid_model(model)
++  if not okay then return nil, { code = "invalid_model", message = validation_error } end
++  self.render_generation = self.render_generation + 1
++  if self.render_ticket then self.render_ticket:cancel(); self.render_ticket = nil end
++  local previous = self.rows
++  self.model = vim.deepcopy(model)
++  if #previous > 0 and #(model.items or {}) == 0 and model.status ~= "ready" and model.status ~= "empty" then
++    self.render_error = nil
++    return self:render()
++  end
++  local rows, projection_info = self:_project()
++  if not rows then
++    self.render_error = projection_info
++    self.rows = {}
++    self.row_index = {}
++    self.projection_info = { truncated = false, total = 0 }
++  else
++    self.render_error = nil
++    self.rows = rows
++    self.row_index = index_rows(rows)
++    self.projection_info = projection_info
++    self.selected_id = Projection.reconcile_selection(rows, self.selected_id, previous)
++    self:_ensure_selection_visible()
++  end
++  return self:render()
++end
++
++function View:render_later(model, scheduler)
++  if self.closed then return nil, { code = "view_closed", message = "view is closed" } end
++  local okay, validation_error = valid_model(model)
++  if not okay then return nil, { code = "invalid_model", message = validation_error } end
++  if self.render_ticket then self.render_ticket:cancel() end
++  self.render_generation = self.render_generation + 1
++  local generation = self.render_generation
++  local snapshot = vim.deepcopy(model)
++  local view = self
++  local ticket, err = self.scope:schedule(function()
++    if view.closed or not view.scope.alive or generation ~= view.render_generation then return end
++    view.render_ticket = nil
++    view:update(snapshot)
++  end, scheduler)
++  if not ticket then
++    self.render_ticket = nil
++    return nil, err
++  end
++  self.render_ticket = ticket
++  return ticket
++end
++
++function View:render()
++  if self.closed or not vim.api.nvim_buf_is_valid(self.buffer) then return nil, { code = "view_closed", message = "view is closed" } end
++  local width = self:_content_width()
++  local content = {}
++  local highlights = {}
++  local row_by_line = {}
++  local help = self.help_visible and {
++    "j/k or arrows: move selection",
++    "Enter: activate selected item",
++    "Space: expand or collapse a branch",
++    "q: close this view; ?: hide help",
++  } or nil
++  local selected_line
++
++  content[#content + 1] = truncate_cells(" " .. self.title, width)
++  highlights[1] = "WorkbenchTitle"
++  if help then
++    for _, line in ipairs(help) do
++      content[#content + 1] = truncate_cells(" " .. line, width)
++      highlights[#content] = "WorkbenchHelp"
++    end
++  end
++
++  local available = math.max(1, (self.window and vim.api.nvim_win_is_valid(self.window) and vim.api.nvim_win_get_height(self.window) or vim.o.lines - 2) - #content - 1)
++  local status = self.render_error and "error" or (self.model.status or "ready")
++  self.visible_rows = {}
++  if #self.rows == 0 or status ~= "ready" then
++    local state_rows, group = status_lines({ status = status, error = self.render_error or self.model.error, reason = self.model.reason })
++    content[#content + 1] = truncate_cells(" " .. state_rows[1], width)
++    highlights[#content] = group
++  else
++    local first = math.max(1, math.min(#self.rows, self.scroll_offset + 1))
++    local before = first > 1
++    local item_slots = available - (before and 1 or 0)
++    local after = first + item_slots - 1 < #self.rows
++    if after then item_slots = item_slots - 1 end
++    item_slots = math.max(1, item_slots)
++    if before then
++      content[#content + 1] = truncate_cells(" … previous items", width)
++      highlights[#content] = "WorkbenchDetail"
++    end
++    for index = first, math.min(#self.rows, first + item_slots - 1) do
++      local row = self.rows[index]
++      self.visible_rows[#self.visible_rows + 1] = row
++      content[#content + 1] = self:_format_row(row, width)
++      highlights[#content] = "WorkbenchItem"
++      row_by_line[#content] = row.id
++      if row.id == self.selected_id then selected_line = #content end
++    end
++    if after then
++      local more = self.projection_info.truncated and " … projection capped at 20k rows" or " … more items"
++      content[#content + 1] = truncate_cells(more, width)
++      highlights[#content] = "WorkbenchDetail"
++    end
++  end
++
++  local hint = self.help_visible and " ? hides help " or " j/k move  Enter select  ? help "
++  content[#content + 1] = truncate_cells(hint, width)
++  highlights[#content] = "WorkbenchHelp"
++  self.row_by_line = row_by_line
++  self.visible_selection_line = selected_line
++
++  local was_modifiable = vim.bo[self.buffer].modifiable
++  vim.bo[self.buffer].modifiable = true
++  vim.api.nvim_buf_set_lines(self.buffer, 0, -1, false, content)
++  if not highlight_namespace then highlight_namespace = vim.api.nvim_create_namespace("workbench.ui.view") end
++  vim.api.nvim_buf_clear_namespace(self.buffer, highlight_namespace, 0, -1)
++  for line, group in pairs(highlights) do
++    vim.api.nvim_buf_add_highlight(self.buffer, highlight_namespace, group, line - 1, 0, -1)
++  end
++  vim.bo[self.buffer].modifiable = was_modifiable
++  if self.window and vim.api.nvim_win_is_valid(self.window) then
++    vim.wo[self.window].cursorline = true
++    vim.wo[self.window].number = false
++    vim.wo[self.window].relativenumber = false
++    vim.wo[self.window].signcolumn = "no"
++    vim.wo[self.window].wrap = false
++    vim.wo[self.window].winhl = "Normal:WorkbenchItem,CursorLine:WorkbenchSelection,EndOfBuffer:WorkbenchItem"
++    if selected_line then pcall(vim.api.nvim_win_set_cursor, self.window, { selected_line, 0 }) end
++  end
++  return true
++end
++
++function View:_sync_selection()
++  if self.closed or not self.scope.alive or not self.window or not vim.api.nvim_win_is_valid(self.window) then return end
++  if vim.api.nvim_get_current_win() ~= self.window then return end
++  local okay, cursor = pcall(vim.api.nvim_win_get_cursor, self.window)
++  if not okay then return end
++  local id = self.row_by_line[cursor[1]]
++  if not id or id == self.selected_id then return end
++  self.selected_id = id
++  if self.on_select then
++    local row
++    for _, candidate in ipairs(self.visible_rows) do if candidate.id == id then row = candidate; break end end
++    local ok, err = pcall(self.on_select, id, row)
++    if not ok then self.last_error = tostring(err) end
++  end
++end
++
++function View:move(delta)
++  if self.closed or not is_ready(self.model) or self.render_error or not self.window or not vim.api.nvim_win_is_valid(self.window) then return false end
++  if #self.rows == 0 then return false end
++  local index = self.row_index[self.selected_id] or 0
++  if index == 0 then index = delta < 0 and (#self.rows + 1) or 0 end
++  local next_index = math.max(1, math.min(#self.rows, index + (delta < 0 and -1 or 1)))
++  if next_index == index then return false end
++  local candidate = self.rows[next_index]
++  local step = delta < 0 and -1 or 1
++  while candidate and candidate.selectable == false do
++    next_index = next_index + step
++    if next_index < 1 or next_index > #self.rows then return false end
++    candidate = self.rows[next_index]
++  end
++  if not candidate then return false end
++  self.selected_id = candidate.id
++  self:_ensure_selection_visible()
++  self:render()
++  local target
++  for line, id in pairs(self.row_by_line) do if id == self.selected_id then target = line; break end end
++  if not target then return false end
++  vim.api.nvim_win_set_cursor(self.window, { target, 0 })
++  if self.on_select then
++    local ok, err = pcall(self.on_select, candidate.id, candidate)
++    if not ok then self.last_error = tostring(err) end
++  end
++  return true
++end
++
++function View:activate()
++  if self.closed or not is_ready(self.model) or self.render_error or not self.window or not vim.api.nvim_win_is_valid(self.window) then return nil end
++  self:_sync_selection()
++  local id = self.selected_id
++  if not id then return nil end
++  local row
++  for _, candidate in ipairs(self.visible_rows) do if candidate.id == id then row = candidate; break end end
++  if not row then return nil end
++  if row.has_children then return self:toggle_expanded(id) end
++  if self.on_select then
++    local ok, result = pcall(self.on_select, id, row, true)
++    if not ok then self.last_error = tostring(result); return nil, self.last_error end
++    return result
++  end
++  return id
++end
++
++function View:toggle_expanded(id)
++  if self.closed or not is_ready(self.model) or self.render_error or self.kind ~= "tree" then return false end
++  id = id or self.selected_id
++  if not id then return false end
++  local selected
++  for _, row in ipairs(self.rows) do if row.id == id then selected = row; break end end
++  if not selected or not selected.has_children then return false end
++  self.expanded[id] = self.expanded[id] == false and true or false
++  local rows, err = self:_project()
++  if not rows then self.render_error = err; return nil, err end
++  local previous = self.rows
++  self.rows = rows
++  self.row_index = index_rows(rows)
++  self.projection_info = err
++  self.selected_id = Projection.reconcile_selection(rows, self.selected_id, previous)
++  self:_ensure_selection_visible()
++  return self:render()
++end
++
++function View:toggle_help()
++  if self.closed then return false end
++  self.help_visible = not self.help_visible
++  self:_ensure_selection_visible()
++  return self:render()
++end
++
++function View:set_window(window, mode)
++  self.window = window
++  self.mode = mode
++  self:_ensure_selection_visible()
++  self:render()
++end
++
++function View:close()
++  if self.closed then return false end
++  if self.on_close then return self.on_close(self) end
++  self.closed = true
++  return self.scope:dispose()
++end
++
++return M
+
+diff --git a/lua/workbench/ui/layout.lua b/lua/workbench/ui/layout.lua
+new file mode 100644
+index 0000000..a6a410e
+--- /dev/null
++++ b/lua/workbench/ui/layout.lua
+@@ -0,0 +1,406 @@
++local Scope = require("workbench.core.scope")
++local View = require("workbench.ui.view")
++
++local M = {}
++local Layout = {}
++Layout.__index = Layout
++
++local function win_key(win)
++  return tostring(win)
++end
++
++local function valid_window(win, tab)
++  return type(win) == "number" and vim.api.nvim_win_is_valid(win)
++    and (not tab or vim.api.nvim_win_get_tabpage(win) == tab)
++end
++
++local function is_editor_window(win)
++  if not vim.api.nvim_win_is_valid(win) then return false end
++  local buffer = vim.api.nvim_win_get_buf(win)
++  return vim.api.nvim_buf_is_valid(buffer) and vim.bo[buffer].buftype == ""
++end
++
++local function error_value(code, message)
++  return { code = code, message = message }
++end
++
++function M.new(opts)
++  opts = opts or {}
++  local manager = setmetatable({
++    scope = Scope.new("workbench-ui-layout"),
++    tabs = {},
++    windows = {},
++    views = 0,
++    hooks = nil,
++    resize_ticket = nil,
++    disposed = false,
++    options = {
++      sidebar_width = math.max(24, math.min(48, tonumber(opts.sidebar_width) or 32)),
++      results_height = math.max(6, math.min(16, tonumber(opts.results_height) or 8)),
++      min_editor_width = math.max(40, tonumber(opts.min_editor_width) or 60),
++      min_editor_height = math.max(6, tonumber(opts.min_editor_height) or 8),
++      overlay_width = math.max(24, tonumber(opts.overlay_width) or 64),
++    },
++  }, Layout)
++  return manager
++end
++
++function Layout:_install_hooks()
++  if self.hooks or self.disposed then return end
++  local group = vim.api.nvim_create_augroup("WorkbenchLayout" .. tostring(self), { clear = true })
++  vim.api.nvim_create_autocmd({ "VimResized", "TabEnter" }, {
++    group = group,
++    callback = function() self:_schedule_reflow() end,
++  })
++  vim.api.nvim_create_autocmd("WinClosed", {
++    group = group,
++    callback = function(args)
++      local record = self.windows[args.match]
++      if record and not record.moving and record.active then
++        local state = record.tab_state
++        record.scope:dispose()
++        if next(state.views) == nil and state.scope.alive then state.scope:dispose() end
++      end
++    end,
++  })
++  vim.api.nvim_create_autocmd("TabClosed", {
++    group = group,
++    callback = function()
++      local closed_number = tonumber(vim.v.event.tab)
++      if not closed_number then return end
++      local closing = {}
++      for _, state in pairs(self.tabs) do if state.tab_number == closed_number then closing[#closing + 1] = state end end
++      for _, state in ipairs(closing) do state.scope:dispose() end
++    end,
++  })
++  local handle, err = self.scope:defer(function()
++    pcall(vim.api.nvim_del_augroup_by_id, group)
++    self.hooks = nil
++  end, "layout-lifecycle-autocmds", "autocmd")
++  if not handle then
++    pcall(vim.api.nvim_del_augroup_by_id, group)
++    return nil, err
++  end
++  self.hooks = handle
++  return true
++end
++
++function Layout:_release_hooks_if_idle()
++  if self.views ~= 0 or not self.hooks then return end
++  local handle = self.hooks
++  self.hooks = nil
++  handle:dispose()
++end
++
++function Layout:_schedule_reflow()
++  if self.disposed or self.resize_ticket then return end
++  local ticket, err = self.scope:schedule(function()
++    self.resize_ticket = nil
++    local current_tab = vim.api.nvim_get_current_tabpage()
++    local state = self.tabs[current_tab]
++    if not state or not state.scope.alive then return end
++    local records = {}
++    for _, record in pairs(state.views) do records[#records + 1] = record end
++    for _, record in ipairs(records) do
++      if record.active then self:_place(record, true) end
++    end
++  end)
++  if ticket then self.resize_ticket = ticket else self.last_error = err end
++end
++
++function Layout:_tab_state(tab)
++  local state = self.tabs[tab]
++  if state then return state end
++  local scope, err = self.scope:child("tab:" .. tostring(tab))
++  if not scope then return nil, err end
++  state = {
++    tab = tab,
++    tab_number = vim.api.nvim_tabpage_get_number(tab),
++    scope = scope,
++    views = {},
++    return_window = nil,
++    return_buffer = nil,
++  }
++  local state_ref = state
++  local _, state_error = scope:defer(function()
++    if self.tabs[tab] == state_ref then self.tabs[tab] = nil end
++  end, "tab-registration:" .. tostring(tab), "registration")
++  if state_error then scope:dispose(); return nil, state_error end
++  self.tabs[tab] = state
++  return state
++end
++
++function Layout:_editor_target(state)
++  if valid_window(state.return_window, state.tab) and is_editor_window(state.return_window) then
++    return state.return_window
++  end
++  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(state.tab)) do
++    if not self.windows[win_key(win)] and is_editor_window(win) then
++      state.return_window = win
++      state.return_buffer = vim.api.nvim_win_get_buf(win)
++      return win
++    end
++  end
++  return nil
++end
++
++function Layout:_geometry(view)
++  local columns = vim.o.columns
++  local lines = vim.o.lines
++  local editor_width = self.options.min_editor_width
++  local editor_height = self.options.min_editor_height
++  if view.placement == "sidebar" and columns >= self.options.sidebar_width + editor_width + 1
++    and lines >= editor_height + 5 then
++    local width = math.min(self.options.sidebar_width, columns - editor_width - 1)
++    return { mode = "split", command = "topleft vsplit", width = width }
++  end
++  if view.placement == "results" and lines >= self.options.results_height + editor_height + 5 then
++    local height = math.min(self.options.results_height, lines - editor_height - 3)
++    return { mode = "split", command = "botright split", height = height }
++  end
++
++  local width = math.max(1, math.min(self.options.overlay_width, columns - 4))
++  local height = math.max(1, math.min(math.max(8, lines - 8), lines - 4))
++  return {
++    mode = "overlay",
++    config = {
++      relative = "editor",
++      row = math.max(0, math.floor((lines - height) / 2)),
++      col = math.max(0, math.floor((columns - width) / 2)),
++      width = width,
++      height = height,
++      style = "minimal",
++      border = "single",
++      focusable = true,
++    },
++  }
++end
++
++function Layout:_forget_window(record, win)
++  self.windows[win_key(win)] = nil
++  if record.window == win then
++    record.window = nil
++    record.view:set_window(nil, nil)
++  end
++end
++
++function Layout:_close_window(record, moving)
++  local win = record.window
++  local handle = record.window_handle
++  record.window = nil
++  record.window_handle = nil
++  record.moving = moving == true
++  if win then self.windows[win_key(win)] = nil end
++  if handle then handle:dispose()
++  elseif win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
++  if record.view and record.view.window ~= nil then record.view:set_window(nil, nil) end
++  record.moving = false
++end
++
++function Layout:_place(record, preserve_focus)
++  if not record.active or not record.scope.alive then return nil, error_value("view_closed", "view is closed") end
++  local state, view = record.tab_state, record.view
++  if not vim.api.nvim_tabpage_is_valid(state.tab) then return nil, error_value("tab_closed", "view tab has closed") end
++  local current_tab = vim.api.nvim_get_current_tabpage()
++  if current_tab ~= state.tab then return true end
++
++  local old_win = record.window
++  local keep_focus = preserve_focus and old_win and vim.api.nvim_get_current_win() == old_win or false
++  local restore_win = vim.api.nvim_get_current_win()
++  local target = self:_editor_target(state)
++  if not target then return nil, error_value("no_editor_window", "no normal editor window is available for this view") end
++  if not valid_window(target, state.tab) then return nil, error_value("no_editor_window", "view return target is no longer valid") end
++
++  local geometry = self:_geometry(view)
++  if old_win then self:_close_window(record, true) end
++  local buffer = view.buffer
++  local desired_focus
++  if preserve_focus then desired_focus = keep_focus else desired_focus = record.focus_on_mount end
++  local opened, window_or_error
++  if geometry.mode == "overlay" then
++    opened, window_or_error = pcall(vim.api.nvim_open_win, buffer, desired_focus, geometry.config)
++  else
++    opened, window_or_error = pcall(vim.api.nvim_win_call, target, function()
++      vim.cmd(geometry.command)
++      local split = vim.api.nvim_get_current_win()
++      vim.api.nvim_win_set_buf(split, buffer)
++      if geometry.width then vim.api.nvim_win_set_width(split, geometry.width) end
++      if geometry.height then vim.api.nvim_win_set_height(split, geometry.height) end
++      return split
++    end)
++  end
++  if not opened then
++    if valid_window(restore_win, state.tab) then pcall(vim.api.nvim_set_current_win, restore_win) end
++    return nil, error_value("window_create_failed", tostring(window_or_error))
++  end
++  local window = window_or_error
++  if not vim.api.nvim_win_is_valid(window) then return nil, error_value("window_create_failed", "Neovim returned an invalid panel window") end
++  record.window = window
++  record.mode = geometry.mode
++  record.window_key = win_key(window)
++  record.moving = false
++  self.windows[record.window_key] = record
++  view:set_window(window, geometry.mode)
++  if geometry.mode == "split" then
++    if geometry.width then vim.wo[window].winfixwidth = true end
++    if geometry.height then vim.wo[window].winfixheight = true end
++  end
++  local handle, err = record.scope:defer(function()
++    self:_forget_window(record, window)
++    if vim.api.nvim_win_is_valid(window) then pcall(vim.api.nvim_win_close, window, true) end
++  end, "view-window:" .. record.id, "window")
++  if not handle then
++    self.windows[record.window_key] = nil
++    pcall(vim.api.nvim_win_close, window, true)
++    record.window = nil
++    record.mode = nil
++    return nil, err or error_value("scope_disposed", "view scope is disposed")
++  end
++  record.window_handle = handle
++
++  if desired_focus and vim.api.nvim_win_is_valid(window) then
++    pcall(vim.api.nvim_set_current_win, window)
++  elseif valid_window(restore_win, state.tab) and restore_win ~= window then
++    pcall(vim.api.nvim_set_current_win, restore_win)
++  elseif valid_window(target, state.tab) then
++    pcall(vim.api.nvim_set_current_win, target)
++  end
++  return true
++end
++
++function Layout:_remove_record(record)
++  if not record.active then return end
++  record.active = false
++  record.view.closed = true
++  if record.tab_state.views[record.id] == record then record.tab_state.views[record.id] = nil end
++  self.views = math.max(0, self.views - 1)
++  self:_release_hooks_if_idle()
++end
++
++function Layout:_close_record(record)
++  if not record.active then return false end
++  local current = vim.api.nvim_get_current_win()
++  local was_focused = record.window and current == record.window
++  local target = record.tab_state.return_window
++  self:_close_window(record, false)
++  local report = record.scope:dispose()
++  if was_focused and valid_window(target, record.tab_state.tab) then pcall(vim.api.nvim_set_current_win, target) end
++  if next(record.tab_state.views) == nil and record.tab_state.scope.alive then record.tab_state.scope:dispose() end
++  return report
++end
++
++function Layout:mount(opts)
++  opts = opts or {}
++  if self.disposed or not self.scope.alive then return nil, error_value("layout_disposed", "layout manager has been disposed") end
++  if vim.fn.getcmdtype() ~= "" or vim.fn.getcmdwintype() ~= "" or vim.fn.mode():match("^[cRr!]") then
++    return nil, error_value("prompt_active", "cannot open a workbench view over an active prompt")
++  end
++  if type(opts.id) ~= "string" or opts.id == "" then return nil, error_value("invalid_view", "view id is required") end
++  if opts.placement ~= nil and opts.placement ~= "sidebar" and opts.placement ~= "results" then
++    return nil, error_value("invalid_view", "placement must be sidebar or results")
++  end
++
++  local current_tab = vim.api.nvim_get_current_tabpage()
++  local state, state_error = self:_tab_state(current_tab)
++  if not state then return nil, state_error end
++  if state.views[opts.id] then return nil, error_value("duplicate_view", "view is already mounted: " .. opts.id) end
++  local current_win = vim.api.nvim_get_current_win()
++  if not self.windows[win_key(current_win)] and is_editor_window(current_win) then
++    state.return_window = current_win
++    state.return_buffer = vim.api.nvim_win_get_buf(current_win)
++  end
++  if not self:_editor_target(state) then
++    state.scope:dispose()
++    return nil, error_value("no_editor_window", "a normal editor window is required to mount a workbench view")
++  end
++
++  local hooks_ok, hooks_error = self:_install_hooks()
++  if not hooks_ok then state.scope:dispose(); return nil, hooks_error end
++  local scope, scope_error = state.scope:child("view:" .. opts.id)
++  if not scope then state.scope:dispose(); self:_release_hooks_if_idle(); return nil, scope_error end
++  local record = {
++    id = opts.id,
++    scope = scope,
++    tab_state = state,
++    active = true,
++    focus_on_mount = opts.focus ~= false,
++    mode = nil,
++  }
++  local view_options = vim.tbl_extend("force", opts, {
++    scope = scope,
++    on_close = function() return self:_close_record(record) end,
++  })
++  local created, view_or_error, view_error = pcall(View.new, view_options)
++  if not created or not view_or_error then
++    scope:dispose()
++    if next(state.views) == nil and state.scope.alive then state.scope:dispose() end
++    self:_release_hooks_if_idle()
++    return nil, error_value("view_create_failed", tostring(created and view_error or view_or_error))
++  end
++  record.view = view_or_error
++  record.placement = record.view.placement
++  local _, registration_error = scope:defer(function() self:_remove_record(record) end, "view-registration:" .. opts.id, "registration")
++  if registration_error then
++    scope:dispose()
++    self:_release_hooks_if_idle()
++    return nil, registration_error
++  end
++  state.views[opts.id] = record
++  self.views = self.views + 1
++  local placed, placement_error = self:_place(record, false)
++  if not placed then
++    self:_close_record(record)
++    return nil, placement_error
++  end
++  return record.view
++end
++
++function Layout:get(id, tab)
++  local state = self.tabs[tab or vim.api.nvim_get_current_tabpage()]
++  local record = state and state.views[id]
++  return record and record.view or nil
++end
++
++function Layout:close(id, tab)
++  local state = self.tabs[tab or vim.api.nvim_get_current_tabpage()]
++  local record = state and state.views[id]
++  if not record then return false end
++  return self:_close_record(record)
++end
++
++function Layout:status()
++  local views = {}
++  for tab, state in pairs(self.tabs) do
++    for _, record in pairs(state.views) do
++      views[#views + 1] = {
++        id = record.id,
++        tabpage = tab,
++        window = record.window,
++        buffer = record.view.buffer,
++        mode = record.mode,
++        placement = record.view.placement,
++        selected_id = record.view.selected_id,
++        resources = record.scope:inventory(),
++      }
++    end
++  end
++  table.sort(views, function(left, right)
++    if left.tabpage == right.tabpage then return left.id < right.id end
++    return left.tabpage < right.tabpage
++  end)
++  return { disposed = self.disposed, active_views = self.views, resources = self.scope:inventory(), views = views }
++end
++
++function Layout:dispose()
++  if self.disposed then return self.disposal_report end
++  self.disposed = true
++  self.disposal_report = self.scope:dispose()
++  self.windows = {}
++  self.tabs = {}
++  self.views = 0
++  self.hooks = nil
++  self.resize_ticket = nil
++  return self.disposal_report
++end
++
++return M
+
+diff --git a/tests/runtime/test_ui_projection.lua b/tests/runtime/test_ui_projection.lua
+new file mode 100644
+index 0000000..9a9b8dc
+--- /dev/null
++++ b/tests/runtime/test_ui_projection.lua
+@@ -0,0 +1,117 @@
++local MiniTest = require("mini.test")
++local expect = MiniTest.expect
++local child
++local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
++
++local function evaluate(source, ...)
++  return child.lua(source, { ... })
++end
++
++return MiniTest.new_set({
++  hooks = {
++    pre_case = function()
++      child = MiniTest.new_child_neovim()
++      child.start({}, { nvim_executable = assert(vim.env.NVIM_TEST_BINARY) })
++      child.lua("local root = ...; vim.opt.runtimepath:prepend(root)", { root })
++    end,
++    post_case = function()
++      if child then pcall(child.stop); child = nil end
++    end,
++  },
++}, {
++  ["tree projection retains IDs, sibling order and explicit expansion"] = function()
++    local result = evaluate([[
++      local projection = require('workbench.ui.projection')
++      local items = {
++        { id = 'root', label = 'workspace', kind = 'directory' },
++        { id = 'a', label = 'alpha', kind = 'directory', parent_id = 'root' },
++        { id = 'a-file', label = 'alpha.txt', parent_id = 'a' },
++        { id = 'b', label = 'beta', kind = 'directory', parent_id = 'root' },
++        { id = 'b-file', label = 'beta.txt', parent_id = 'b' },
++      }
++      local expanded, info = projection.tree(items, { root = true, a = true, b = false })
++      local collapsed = projection.tree(items, { root = false })
++      return {
++        ids = vim.tbl_map(function(row) return row.id end, expanded),
++        first_child = expanded[2],
++        collapsed_ids = vim.tbl_map(function(row) return row.id end, collapsed),
++        truncated = info.truncated,
++      }
++    ]])
++    expect.equality(result.ids, { "root", "a", "a-file", "b" })
++    expect.equality(result.first_child.parent_id, "root")
++    expect.equality(result.first_child.depth, 1)
++    expect.equality(result.first_child.has_children, true)
++    expect.equality(result.collapsed_ids, { "root" })
++    expect.equality(result.truncated, false)
++  end,
++
++  ["selection follows stable IDs and falls back to next sibling then parent"] = function()
++    local result = evaluate([[
++      local projection = require('workbench.ui.projection')
++      local before = projection.tree({
++        { id = 'root', label = 'root' },
++        { id = 'a', label = 'a', parent_id = 'root' },
++        { id = 'b', label = 'b', parent_id = 'root' },
++        { id = 'c', label = 'c', parent_id = 'root' },
++      }, { root = true })
++      local stable = projection.reconcile_selection(before, 'b', before)
++      local after = projection.tree({
++        { id = 'root', label = 'root' },
++        { id = 'a', label = 'a', parent_id = 'root' },
++        { id = 'c', label = 'c', parent_id = 'root' },
++      }, { root = true })
++      local next_sibling = projection.reconcile_selection(after, 'b', before)
++      local only_parent = projection.tree({ { id = 'root', label = 'root' } }, { root = true })
++      local parent = projection.reconcile_selection(only_parent, 'b', before)
++      return { stable = stable, next_sibling = next_sibling, parent = parent }
++    ]])
++    expect.equality(result.stable, "b")
++    expect.equality(result.next_sibling, "c")
++    expect.equality(result.parent, "root")
++  end,
++
++  ["list projection preserves order and reports bounded output"] = function()
++    local result = evaluate([[
++      local projection = require('workbench.ui.projection')
++      local rows, info = projection.list({
++        { id = 'third', label = 'third' },
++        { id = 'first', label = 'first' },
++        { id = 'second', label = 'second' },
++      }, 2)
++      return { ids = vim.tbl_map(function(row) return row.id end, rows), info = info }
++    ]])
++    expect.equality(result.ids, { "third", "first" })
++    expect.equality(result.info.truncated, true)
++    expect.equality(result.info.total, 3)
++  end,
++
++  ["duplicate IDs and parent cycles are rejected"] = function()
++    local result = evaluate([[
++      local projection = require('workbench.ui.projection')
++      local duplicate, duplicate_error = projection.list({ { id = 'x', label = 'one' }, { id = 'x', label = 'two' } })
++      local cycle, cycle_error = projection.tree({
++        { id = 'a', label = 'a', parent_id = 'b' },
++        { id = 'b', label = 'b', parent_id = 'a' },
++      }, {})
++      return { duplicate = duplicate, duplicate_error = duplicate_error, cycle = cycle, cycle_error = cycle_error }
++    ]])
++    expect.equality(result.duplicate, nil)
++    expect.equality(result.duplicate_error, "duplicate projection id: x")
++    expect.equality(result.cycle, nil)
++    expect.equality(result.cycle_error, "projection contains a parent cycle at a")
++  end,
++
++  ["sparse and keyed item collections are rejected"] = function()
++    local result = evaluate([[
++      local projection = require('workbench.ui.projection')
++      local keyed, keyed_error = projection.list({ item = { id = 'x', label = 'x' } })
++      local sparse, sparse_error = projection.list({ [1] = { id = 'x', label = 'x' }, [3] = { id = 'z', label = 'z' } })
++      return { keyed = keyed, keyed_error = keyed_error, sparse = sparse, sparse_error = sparse_error }
++    ]])
++    expect.equality(result.keyed, nil)
++    expect.equality(result.keyed_error, "projection items must be a dense array")
++    expect.equality(result.sparse, nil)
++    expect.equality(result.sparse_error, "projection items must be a dense array")
++  end,
++})
+
+diff --git a/tests/e2e/wb06_lifecycle.py b/tests/e2e/wb06_lifecycle.py
+new file mode 100644
+index 0000000..595dc3f
+--- /dev/null
++++ b/tests/e2e/wb06_lifecycle.py
+@@ -0,0 +1,416 @@
++#!/usr/bin/env python3
++"""Real RPC-grid acceptance for WB-06 layout, rendering and teardown."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import secrets
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++from pathlib import Path
++from typing import Any
++
++import pynvim
++
++ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT))
++from tests.e2e.driver import Grid, git_head, parse_grids  # noqa: E402
++
++
++class Run:
++    def __init__(self, nvim: str, cols: int, rows: int, output: Path):
++        self.nvim = nvim
++        self.cols = cols
++        self.rows = rows
++        self.output = output
++        self.proc: subprocess.Popen[str] | None = None
++        self.control = None
++        self.ui = None
++        self.thread: threading.Thread | None = None
++        self.grid = Grid()
++        self.socket = f"/tmp/wb06-{secrets.token_hex(8)}.sock"
++        self.watchdog: threading.Timer | None = None
++        self.child_reaped = False
++        self.returncode: int | None = None
++        self.failure: str | None = None
++        self.outcome: dict[str, Any] = {}
++        self.command: list[str] = []
++        self.xdg: tempfile.TemporaryDirectory[str] | None = None
++        self.mount_focus: dict[str, Any] = {}
++        self.first_view_ms = 0.0
++
++    def lua(self, source: str, *args):
++        assert self.control is not None
++        return self.control.exec_lua(source, list(args))
++
++    def wait_lua(self, expression: str, description: str, timeout: float = 5.0):
++        deadline = time.monotonic() + timeout
++        while time.monotonic() < deadline:
++            if self.lua(f"return ({expression})"):
++                return
++            time.sleep(0.01)
++        raise TimeoutError(f"timed out waiting for {description}")
++
++    def wait_screen(self, fragment: str, timeout: float = 4.0):
++        self.grid.wait_for(lambda: any(fragment in line for line in self.grid.lines()), timeout, fragment)
++
++    def _start(self):
++        self.output.mkdir(parents=True, exist_ok=False)
++        self.xdg = tempfile.TemporaryDirectory(prefix="wb06-xdg-")
++        xdg_root = Path(self.xdg.name)
++        for name in ("config", "data", "state", "cache"):
++            (xdg_root / name).mkdir()
++        environment = os.environ.copy()
++        environment.update({
++            "XDG_CONFIG_HOME": str(xdg_root / "config"),
++            "XDG_DATA_HOME": str(xdg_root / "data"),
++            "XDG_STATE_HOME": str(xdg_root / "state"),
++            "XDG_CACHE_HOME": str(xdg_root / "cache"),
++            "GIT_CONFIG_NOSYSTEM": "1",
++        })
++        self.command = [
++            self.nvim,
++            "--clean",
++            "--headless",
++            "--listen",
++            self.socket,
++            "--cmd",
++            f"set lines={self.rows} columns={self.cols}",
++            "--cmd",
++            f"set runtimepath^={ROOT}",
++        ]
++        self.proc = subprocess.Popen(self.command, cwd=ROOT, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++        self.watchdog = threading.Timer(90, self._expire)
++        self.watchdog.daemon = True
++        self.watchdog.start()
++        deadline = time.monotonic() + 5
++        while not Path(self.socket).exists():
++            if self.proc.poll() is not None:
++                stdout, stderr = self.proc.communicate()
++                raise RuntimeError(f"Neovim exited before RPC listen: {stdout}\n{stderr}")
++            if time.monotonic() >= deadline:
++                raise TimeoutError("Neovim RPC socket did not appear")
++            time.sleep(0.01)
++        self.control = pynvim.attach("socket", path=self.socket)
++        self.ui = pynvim.attach("socket", path=self.socket)
++        self.ui.ui_attach(self.cols, self.rows, rgb=True, ext_linegrid=True)
++        self.thread = threading.Thread(target=self._ui_loop, daemon=True, name="wb06-grid")
++        self.thread.start()
++        self.grid.wait_for(lambda: self.grid.flushes > 0, 5, "initial UI frame")
++        self.control.api.set_option("mouse", "a")
++        self.control.api.buf_set_lines(self.control.api.get_current_buf(), 0, -1, True, ["USER OWNED CONTENT"])
++        self.control.api.buf_set_option(self.control.api.get_current_buf(), "modified", True)
++        self.lua("_G.wb06_origin_buf=vim.api.nvim_get_current_buf(); _G.wb06_origin_win=vim.api.nvim_get_current_win(); _G.wb06_layout=require('workbench.ui.layout').new(); _G.foreign_events=0; _G.foreign_group=vim.api.nvim_create_augroup('WorkbenchForeignProbe',{clear=true}); vim.api.nvim_create_autocmd('User',{group=_G.foreign_group,pattern='ForeignProbe',callback=function() _G.foreign_events=_G.foreign_events+1 end})")
++
++    def _mount(self):
++        items = [
++            {"id": "root", "label": "Workspace", "kind": "directory"},
++            {"id": "alpha", "label": "alpha", "kind": "directory", "parent_id": "root"},
++            {"id": "alpha-file", "label": "alpha.py", "kind": "file", "parent_id": "alpha"},
++            {"id": "beta", "label": "beta", "kind": "directory", "parent_id": "root"},
++            {"id": "beta-file", "label": "beta.py", "kind": "file", "parent_id": "beta"},
++            {"id": "wide", "label": "界" + "wide-label-" * 30, "kind": "file", "parent_id": "root"},
++        ]
++        options = {
++            "id": "files",
++            "title": "Files",
++            "kind": "tree",
++            "placement": "sidebar",
++            "focus": True,
++            "expanded": {"root": True, "alpha": True, "beta": True},
++            "model": {"status": "ready", "items": items},
++        }
++        started = time.perf_counter_ns()
++        mounted = self.lua("local args=...; local opts=args[1]; local view,err=_G.wb06_layout:mount(opts); _G.wb06_view=view; if view then view.on_select=function(id, row, activate) _G.wb06_selected=id; if activate then _G.wb06_activated=id end end end; return {ok=view~=nil,error=err,errmsg=vim.v.errmsg}", options)
++        if not mounted["ok"]:
++            raise RuntimeError(f"layout mount failed: {mounted}")
++        self.mount_focus = self.lua("return {current=vim.api.nvim_get_current_win(), view=_G.wb06_view.window, mode=_G.wb06_view.mode, focus=_G.wb06_layout:status().views[1].mode}")
++        self.wait_screen("Workspace")
++        self.first_view_ms = (time.perf_counter_ns() - started) / 1_000_000
++        self.wait_screen("beta.py")
++        return self.lua("return _G.wb06_layout:status()")
++
++    def _resize(self, cols: int, rows: int, expected_mode: str):
++        assert self.control is not None
++        self.control.command(f"set columns={cols} lines={rows}")
++        self.grid.wait_for(lambda: self.grid.width == cols and self.grid.height == rows, 4, f"grid resize to {cols}x{rows}")
++        self.wait_lua(f"_G.wb06_layout:status().views[1] and _G.wb06_layout:status().views[1].mode == '{expected_mode}'", f"layout reflow to {expected_mode}")
++        focus = self.lua("return vim.api.nvim_get_current_win()")
++        if focus != self.lua("return _G.wb06_origin_win"):
++            raise AssertionError(f"resize stole editor focus while the view was unfocused: {focus}")
++
++    def _exercise(self):
++        assert self.control is not None
++        initial = self._mount()
++        expected_sidebar = "split" if self.cols >= 93 and self.rows >= 13 else "overlay"
++        if initial["views"][0]["mode"] != expected_sidebar:
++            raise AssertionError(f"wrong sidebar mode at {self.cols}x{self.rows}: {initial['views'][0]['mode']}")
++        if len(self.control.api.list_wins()) < 2:
++            raise AssertionError("view must preserve its editor window and add an owned panel")
++        if self.control.api.win_get_buf(self.lua("return _G.wb06_origin_win")).handle != self.lua("return _G.wb06_origin_buf"):
++            raise AssertionError("mount replaced the original editor buffer")
++
++        self.control.api.input(":")
++        self.wait_lua("vim.fn.getcmdtype() == ':'", "command prompt activation")
++        prompt_attempt = self.lua("local v,err=_G.wb06_layout:mount({id='prompt-test',model={status='ready',items={}}}); return {mounted=v~=nil,error=err,active=_G.wb06_layout:status().active_views}")
++        if prompt_attempt["mounted"] or prompt_attempt["error"]["code"] != "prompt_active" or prompt_attempt["active"] != 1:
++            raise AssertionError(f"layout obscured or altered an active command prompt: {prompt_attempt}")
++        self.control.api.input("\x1b")
++        self.wait_lua("vim.fn.getcmdtype() == ''", "command prompt cancellation")
++
++        screen = self.grid.lines()
++        target_row = next(index for index, line in enumerate(screen) if "beta.py" in line)
++        target_col = screen[target_row].index("beta.py")
++        self.control.api.input_mouse("left", "press", "", 0, target_row, target_col)
++        self.control.api.input_mouse("left", "release", "", 0, target_row, target_col)
++        try:
++            self.wait_lua("_G.wb06_selected == 'beta-file'", "mouse selection by stable ID")
++        except TimeoutError as error:
++            state = self.lua(f"local v=_G.wb06_view; return {{selected=_G.wb06_selected,window=v.window,current=vim.api.nvim_get_current_win(),cursor=vim.api.nvim_win_get_cursor(v.window),config=vim.api.nvim_win_get_config(v.window),mode=vim.api.nvim_get_mode().mode,position={{row={target_row},col={target_col}}}}}")
++            raise RuntimeError(f"{error}; mounted={self.mount_focus}; mouse state {state}") from error
++        self.control.api.input("?")
++        self.wait_screen("Enter: activate")
++        self.control.api.input("?")
++        self.control.api.input("k")
++        self.wait_lua("_G.wb06_selected == 'beta'", "keyboard selection by stable ID")
++        self.control.api.input(" ")
++        self.grid.wait_for(lambda: not any("beta.py" in line for line in self.grid.lines()), 3.0, "tree branch collapse")
++        self.control.api.input(" ")
++        self.wait_screen("beta.py")
++        self.control.api.input("j")
++        self.control.api.input("\r")
++        self.wait_lua("_G.wb06_activated == 'beta-file'", "keyboard activation by stable ID")
++
++        self.lua("local args=...; assert(_G.wb06_view:update(args[1]))", {"status": "ready", "items": [
++            {"id": "root", "label": "Workspace", "kind": "directory"},
++            {"id": "beta", "label": "beta", "kind": "directory", "parent_id": "root"},
++            {"id": "beta-file", "label": "beta.py", "kind": "file", "parent_id": "beta"},
++            {"id": "wide", "label": "界" + "wide-label-" * 30, "kind": "file", "parent_id": "root"},
++        ]})
++        self.wait_screen("beta.py")
++        rendered = self.lua("local v=_G.wb06_view; local width=vim.api.nvim_win_get_width(v.window); local lines=vim.api.nvim_buf_get_lines(v.buffer,0,-1,false); local max=0; for _,line in ipairs(lines) do max=math.max(max,vim.fn.strdisplaywidth(line)) end; return {width=width,max=max,selected=v.selected_id,mode=v.mode}")
++        if rendered["max"] > rendered["width"] - 2:
++            raise AssertionError(f"display-cell truncation overflowed panel width: {rendered}")
++        if rendered["selected"] != "beta-file":
++            raise AssertionError(f"selection did not survive projection update: {rendered}")
++
++        state_screens = {}
++        for status, expected in (
++            ("idle", "Not started"),
++            ("loading", "Loading"),
++            ("error", "Error: synthetic failure"),
++            ("empty", "No items"),
++            ("unavailable", "Unavailable: synthetic provider unavailable"),
++        ):
++            self.lua("local args=...; local status, expected=args[1],args[2]; assert(_G.wb06_view:update({status=status, error=expected:match('^Error: (.+)$'), reason=expected:match('^Unavailable: (.+)$'), items={}}))", status, expected)
++            self.wait_screen("Unavailable" if status == "unavailable" else expected)
++            state_screens[status] = expected
++            if status in {"loading", "error"} and self.lua("return _G.wb06_view.selected_id") != "beta-file":
++                raise AssertionError(f"transient {status} state discarded the stable selection")
++        self.lua("local args=...; assert(_G.wb06_view:update(args[1]))", {"status": "ready", "items": [
++            {"id": "root", "label": "Workspace", "kind": "directory"},
++            {"id": "beta", "label": "beta", "kind": "directory", "parent_id": "root"},
++            {"id": "beta-file", "label": "beta.py", "kind": "file", "parent_id": "beta"},
++            {"id": "wide", "label": "界" + "wide-label-" * 30, "kind": "file", "parent_id": "root"},
++        ]})
++        self.wait_screen("beta.py")
++
++        before_theme = self.lua("local names={WorkbenchTitle='Title',WorkbenchItem='Normal',WorkbenchSelection='CursorLine',WorkbenchHelp='Comment',WorkbenchError='ErrorMsg',WorkbenchDetail='NonText'}; local found={}; for name,target in pairs(names) do found[name]=vim.api.nvim_get_hl(0,{name=name,link=true}).link==target end; return found")
++        self.control.command("colorscheme habamax")
++        after_theme = self.lua("local names={WorkbenchTitle='Title',WorkbenchItem='Normal',WorkbenchSelection='CursorLine',WorkbenchHelp='Comment',WorkbenchError='ErrorMsg',WorkbenchDetail='NonText'}; local found={}; for name,target in pairs(names) do found[name]=vim.api.nvim_get_hl(0,{name=name,link=true}).link==target end; return found")
++        if not all(before_theme.values()) or not all(after_theme.values()):
++            raise AssertionError(f"semantic links were lost across a theme change: {before_theme}, {after_theme}")
++
++        self.control.api.input("q")
++        self.wait_lua("_G.wb06_layout:status().active_views == 0", "keyboard view close")
++        focus = self.lua("return {win=vim.api.nvim_get_current_win(), buf=vim.api.nvim_get_current_buf(), origin_win=_G.wb06_origin_win, origin_buf=_G.wb06_origin_buf, modified=vim.bo[_G.wb06_origin_buf].modified, line=vim.api.nvim_buf_get_lines(_G.wb06_origin_buf,0,1,false)[1], resources=_G.wb06_layout:status().resources.resource_count}")
++        if focus["win"] != focus["origin_win"] or focus["buf"] != focus["origin_buf"] or not focus["modified"] or focus["line"] != "USER OWNED CONTENT" or focus["resources"] != 0:
++            raise AssertionError(f"view close did not restore the editor or preserve its state: {focus}")
++
++        expected_results = "split" if self.rows >= 8 + 8 + 5 else "overlay"
++        preview_items = [{"id": f"preview.line.{index:03d}", "kind": "preview", "label": f"Preview line {index:03d}"} for index in range(1, 41)]
++        preview_view = self.lua("local args=...; local opts=args[1]; local v=assert(_G.wb06_layout:mount(opts)); return {mode=v.mode}", {
++            "id": "preview",
++            "title": "Preview",
++            "kind": "list",
++            "placement": "results",
++            "focus": True,
++            "model": {"status": "ready", "items": preview_items},
++        })
++        if preview_view["mode"] != expected_results:
++            raise AssertionError(f"wrong synthetic preview geometry at {self.cols}x{self.rows}: {preview_view}")
++        self.wait_screen("Preview line 001")
++        self.control.api.input("j" * 20)
++        self.wait_lua("_G.wb06_layout:get('preview').selected_id == 'preview.line.021'", "keyboard navigation to offscreen preview row")
++        self.wait_screen("… previous items")
++        self.wait_screen("Preview line 021")
++        preview_selection = self.lua("local v=_G.wb06_layout:get('preview'); return {selected=v.selected_id,offset=v.scroll_offset}")
++        if preview_selection["selected"] != "preview.line.021" or preview_selection["offset"] == 0:
++            raise AssertionError(f"keyboard navigation did not scroll the preview projection: {preview_selection}")
++        self.control.api.set_current_win(self.lua("return _G.wb06_origin_win"))
++        if (self.cols, self.rows) != (120, 35):
++            self._resize(120, 35, "split")
++            self._resize(60, 20, "overlay")
++            self._resize(self.cols, self.rows, expected_results)
++        if self.lua("return _G.wb06_layout:get('preview').selected_id") != "preview.line.021":
++            raise AssertionError("resize changed the selected stable preview ID")
++        self.control.api.set_current_win(self.lua("return _G.wb06_layout:get('preview').window"))
++        self.control.api.input("q")
++        self.wait_lua("_G.wb06_layout:status().active_views == 0", "synthetic preview close")
++        preview_close = self.lua("return {win=vim.api.nvim_get_current_win(),origin= _G.wb06_origin_win,resources=_G.wb06_layout:status().resources.resource_count}")
++        if preview_close["win"] != preview_close["origin"] or preview_close["resources"] != 0:
++            raise AssertionError(f"preview resize/close did not restore layout: {preview_close}")
++
++        self.lua("_G.wb06_view=assert(_G.wb06_layout:mount({id='queued',title='Queued',focus=true,model={status='ready',items={{id='queued.item',label='queued'}}}})); _G.wb06_queue={}; _G.wb06_ticket=assert(_G.wb06_view:render_later({status='ready',items={{id='stale',label='STALE RENDER'}}},function(cb) table.insert(_G.wb06_queue,cb) end)); _G.wb06_old_view_buf=_G.wb06_view.buffer")
++        self.control.command("tabnew")
++        self.lua("vim.api.nvim_win_set_buf(vim.api.nvim_get_current_win(), _G.wb06_origin_buf)")
++        self.control.command("tabprevious")
++        self.lua("assert(_G.wb06_layout:get('queued'))")
++        self.control.command("tabnext")
++        self.control.command("tabprevious")
++        self.control.command("tabclose")
++        self.wait_lua("_G.wb06_layout:status().active_views == 0", "tab closure disposal")
++        self.lua("_G.wb06_queue[1]()")
++        cleanup = self.lua("return {layout=_G.wb06_layout:status(), old_buffer_valid=vim.api.nvim_buf_is_valid(_G.wb06_old_view_buf), origin_valid=vim.api.nvim_buf_is_valid(_G.wb06_origin_buf), origin_modified=vim.bo[_G.wb06_origin_buf].modified, origin_line=vim.api.nvim_buf_get_lines(_G.wb06_origin_buf,0,1,false)[1]}")
++        if cleanup["old_buffer_valid"] or not cleanup["origin_valid"] or not cleanup["origin_modified"] or cleanup["origin_line"] != "USER OWNED CONTENT":
++            raise AssertionError(f"tab cleanup damaged user state or left view buffer live: {cleanup}")
++        if cleanup["layout"]["active_views"] != 0 or cleanup["layout"]["resources"]["resource_count"] != 0:
++            raise AssertionError(f"tab cleanup retained layout resources: {cleanup}")
++
++        results_view = self.lua("local v=assert(_G.wb06_layout:mount({id='results',title='Results',kind='list',placement='results',focus=false,model={status='ready',items={{id='result-1',label='A result'}}}})); return {mode=v.mode,selected=v.selected_id}")
++        if results_view["mode"] != expected_results:
++            raise AssertionError(f"wrong results geometry at {self.cols}x{self.rows}: {results_view}")
++        self.wait_screen("A result")
++        self.lua("assert(_G.wb06_layout:close('results'))")
++
++        cycles = 100
++        self.lua("for i=1,100 do local view=assert(_G.wb06_layout:mount({id='cycle-'..i,title='Cycle',focus=false,model={status='ready',items={{id='cycle.item.'..i,label='item'}}}})); assert(view:close()); local s=_G.wb06_layout:status(); assert(s.active_views==0 and s.resources.resource_count==0, 'leak after cycle '..i) end")
++        final = self.lua("return _G.wb06_layout:status()")
++        if final["active_views"] != 0 or final["resources"]["resource_count"] != 0:
++            raise AssertionError(f"100 mount/close cycles retained resources: {final}")
++        self.lua("_G.wb06_layout:dispose(); vim.api.nvim_exec_autocmds('User',{pattern='ForeignProbe'}); assert(_G.foreign_events==1); assert(#vim.api.nvim_get_autocmds({group=_G.foreign_group})==1)")
++        return {
++            "grid": f"{self.cols}x{self.rows}",
++            "sidebar_mode": expected_sidebar,
++            "results_mode": expected_results,
++            "first_interactive_view_ms": round(self.first_view_ms, 3),
++            "prompt_mount_rejected": True,
++            "mouse_selected_id": "beta-file",
++            "keyboard_activated_id": "beta-file",
++            "selection_survived_update": rendered["selected"],
++            "display_width": rendered["max"],
++            "panel_width": rendered["width"],
++            "semantic_theme_links_before_and_after": {"before": before_theme, "after": after_theme},
++            "states_rendered": state_screens,
++            "preview_scrolled_selection": preview_selection,
++            "user_buffer_preserved": True,
++            "queued_render_rejected_after_tab_close": not cleanup["old_buffer_valid"],
++            "cycles": cycles,
++            "final_resources": final["resources"]["resource_count"],
++            "foreign_autocmd_preserved": True,
++        }
++
++    def run(self):
++        try:
++            self._start()
++            self.outcome = self._exercise()
++            return self.outcome
++        except Exception as error:
++            self.failure = f"{type(error).__name__}: {error}"
++            raise
++        finally:
++            self._cleanup()
++            self._write_artifacts()
++
++    def _ui_loop(self):
++        try:
++            self.ui.run_loop(lambda _method, _args: None, self.grid.notify)
++        except (EOFError, OSError):
++            if self.proc is not None and self.proc.poll() is None:
++                with self.grid.condition:
++                    self.grid.callback_error = "RPC UI disconnected while Neovim remained active"
++                    self.grid.condition.notify_all()
++
++    def _expire(self):
++        if self.proc is not None and self.proc.poll() is None:
++            self.proc.terminate()
++
++    def _cleanup(self):
++        if self.watchdog:
++            self.watchdog.cancel()
++        if self.proc and self.proc.poll() is None and self.control is not None:
++            try:
++                self.control.command("qa!", async_=True)
++            except Exception:
++                pass
++            try:
++                self.proc.wait(timeout=3)
++            except subprocess.TimeoutExpired:
++                self.proc.terminate()
++        if self.proc and self.proc.poll() is None:
++            try:
++                self.proc.wait(timeout=2)
++            except subprocess.TimeoutExpired:
++                self.proc.kill()
++        if self.proc:
++            self.returncode = self.proc.wait(timeout=3)
++            self.child_reaped = True
++        for session in (self.control, self.ui):
++            if session is not None:
++                try:
++                    session.close()
++                except Exception:
++                    pass
++        if self.thread:
++            self.thread.join(timeout=1)
++        Path(self.socket).unlink(missing_ok=True)
++        if self.xdg:
++            self.xdg.cleanup()
++
++    def _write_artifacts(self):
++        self.output.mkdir(parents=True, exist_ok=True)
++        snapshot = self.grid.snapshot()
++        (self.output / "ui-grid.json").write_text(json.dumps(snapshot, indent=2, default=str) + "\n")
++        (self.output / "screen.txt").write_text("\n".join(snapshot["text"]) + "\n")
++        version = subprocess.run([self.nvim, "--version"], text=True, capture_output=True, timeout=3, check=False)
++        metadata = {
++            "nvim": self.nvim,
++            "nvim_version": version.stdout.splitlines()[0] if version.stdout else "unavailable",
++            "grid": f"{self.cols}x{self.rows}",
++            "command": self.command,
++            "environment": {"workbench_head": git_head(ROOT)},
++            "returncode": self.returncode,
++            "child_reaped": self.child_reaped,
++            "failure": self.failure,
++            "outcome": self.outcome,
++        }
++        name = "failure.json" if self.failure else "result.json"
++        (self.output / name).write_text(json.dumps(metadata, indent=2) + "\n")
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--nvim", default="nvim")
++    parser.add_argument("--grid-sizes", default="160x50,120x35,80x24,60x20")
++    parser.add_argument("--output-root", type=Path, default=ROOT / ".test-output" / "e2e" / "wb06")
++    args = parser.parse_args()
++    for cols, rows in parse_grids(args.grid_sizes):
++        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
++        output = args.output_root / f"{stamp}-{cols}x{rows}-{secrets.token_hex(3)}"
++        run = Run(args.nvim, cols, rows, output)
++        try:
++            result = run.run()
++        except Exception as error:
++            print(f"WB-06 UI failed at {cols}x{rows}; artifacts: {output}\n{error}", file=sys.stderr)
++            return 1
++        print(json.dumps({"artifacts": str(output), **result}, indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+
+diff --git a/tests/bench_ui.lua b/tests/bench_ui.lua
+new file mode 100644
+index 0000000..c171f3f
+--- /dev/null
++++ b/tests/bench_ui.lua
+@@ -0,0 +1,95 @@
++local uv = vim.uv or vim.loop
++vim.opt.runtimepath:prepend(vim.fn.getcwd())
++local function summarize(values)
++  table.sort(values)
++  local function percentile(p)
++    local rank = (math.max(1, #values) - 1) * p + 1
++    local lower = math.floor(rank)
++    local upper = math.ceil(rank)
++    return values[lower] + (values[upper] - values[lower]) * (rank - lower)
++  end
++  return { p50_us = percentile(0.50), p95_us = percentile(0.95), samples = #values }
++end
++
++local function measure(iterations, samples, callback)
++  local values = {}
++  for sample = 1, samples do
++    collectgarbage("collect")
++    local started = uv.hrtime()
++    for _ = 1, iterations do callback() end
++    values[sample] = (uv.hrtime() - started) / iterations / 1000
++  end
++  return summarize(values)
++end
++
++vim.o.columns = 160
++vim.o.lines = 50
++local started = uv.hrtime()
++local Layout = require("workbench.ui.layout")
++local cold_require_us = (uv.hrtime() - started) / 1000
++local layout = Layout.new()
++local first = assert(layout:mount({
++  id = "first-use",
++  title = "Files",
++  kind = "list",
++  placement = "sidebar",
++  focus = false,
++  model = { status = "ready", items = { { id = "item.one", label = "one" } } },
++}))
++local cold_mount_us = (uv.hrtime() - started) / 1000
++assert(first:close())
++
++local small_items = {}
++for index = 1, 20 do small_items[index] = { id = "small." .. index, label = "item " .. index } end
++local warm_mount = measure(1, 25, function()
++  local view = assert(layout:mount({ id = "warm", title = "Files", kind = "list", focus = false, model = { status = "ready", items = small_items } }))
++  assert(view:close())
++end)
++
++local many = {}
++for index = 1, 10000 do many[index] = { id = "result." .. index, label = "result " .. index } end
++local Projection = require("workbench.ui.projection")
++local list_10k = measure(1, 25, function() assert(Projection.list(many, 20000)) end)
++local tree_items = { { id = "root", label = "root", kind = "directory" } }
++for index = 1, 9999 do tree_items[#tree_items + 1] = { id = "child." .. index, label = "child " .. index, parent_id = "root" } end
++local tree_10k = measure(1, 25, function() assert(Projection.tree(tree_items, { root = true }, 20000)) end)
++
++local scrolling = assert(layout:mount({
++  id = "scroll-bench",
++  title = "Results",
++  kind = "list",
++  placement = "results",
++  focus = true,
++  model = { status = "ready", items = many },
++}))
++local movement_samples = {}
++for index = 1, 1000 do
++  local before = uv.hrtime()
++  assert(scrolling:move(1))
++  movement_samples[index] = (uv.hrtime() - before) / 1000
++end
++local cached_selection = summarize(movement_samples)
++assert(scrolling:close())
++
++local cycles = 100
++for index = 1, cycles do
++  local view = assert(layout:mount({ id = "cycle-" .. index, title = "Cycle", focus = false, model = { status = "ready", items = small_items } }))
++  assert(view:close())
++end
++local final = layout:status()
++assert(final.active_views == 0 and final.resources.resource_count == 0)
++layout:dispose()
++
++print(vim.json.encode({
++  nvim = vim.version().major .. "." .. vim.version().minor .. "." .. vim.version().patch,
++  cache = "warm operation samples after first lazy require; collectgarbage before each batch",
++  cold_first_view = { require_us = cold_require_us, require_and_mount_us = cold_mount_us },
++  warm_mount_close_20_items = warm_mount,
++  projection_list_10k = list_10k,
++  projection_tree_10k = tree_10k,
++  cached_selection_render_10k = cached_selection,
++  cached_selection_operations = 1000,
++  lifecycle_cycles = cycles,
++  final_resources = final.resources.resource_count,
++}))
++vim.cmd("qa!")
+
+diff --git a/tests/check_ownership.py b/tests/check_ownership.py
+new file mode 100644
+index 0000000..4089b28
+--- /dev/null
++++ b/tests/check_ownership.py
+@@ -0,0 +1,97 @@
++#!/usr/bin/env python3
++"""Guard literal workbench imports against the architecture dependency rules."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import re
++import sys
++from pathlib import Path
++
++
++AREAS = {"core", "services", "providers", "controllers", "ui", "adapters"}
++FORBIDDEN = {
++    "core": {"services", "providers", "controllers", "ui", "adapters", "compose"},
++    "services": {"services", "providers", "controllers", "ui", "adapters", "compose"},
++    "providers": {"services", "providers", "controllers", "ui", "adapters", "compose"},
++    "controllers": {"controllers", "compose", "adapters"},
++    "ui": {"services", "providers", "controllers", "adapters", "compose"},
++    "adapters": {"core", "services", "providers", "controllers", "ui", "compose"},
++}
++LITERAL_REQUIRE = re.compile(r"\brequire\s*\(\s*(['\"])(.*?)\1\s*\)")
++ANY_REQUIRE = re.compile(r"\brequire\s*\(")
++
++
++def load_allowlist(path: Path) -> set[str]:
++    if not path.exists():
++        return set()
++    data = json.loads(path.read_text(encoding="utf-8"))
++    if not isinstance(data, list) or any(not isinstance(item, str) for item in data):
++        raise ValueError(f"{path} must contain a JSON array of path:line entries")
++    return set(data)
++
++
++def inspect(root: Path) -> list[str]:
++    source_root = root / "lua" / "workbench"
++    allowlist_path = root / "tests" / "runtime" / "require_allowlist.json"
++    allowlist = load_allowlist(allowlist_path)
++    errors: list[str] = []
++    seen_dynamic: set[str] = set()
++
++    if not source_root.exists():
++        return []
++
++    for path in sorted(source_root.rglob("*.lua")):
++        relative = path.relative_to(root).as_posix()
++        parts = path.relative_to(source_root).parts
++        source_area = parts[0] if len(parts) > 1 else "public"
++        content = path.read_text(encoding="utf-8")
++        literal_matches = list(LITERAL_REQUIRE.finditer(content))
++
++        for match in literal_matches:
++            module = match.group(2)
++            if not module.startswith("workbench."):
++                continue
++            target = module.removeprefix("workbench.").split(".", 1)[0]
++            if target in FORBIDDEN.get(source_area, set()):
++                line = content.count("\n", 0, match.start()) + 1
++                errors.append(f"{relative}:{line}: {source_area} may not import workbench.{target}")
++
++        literal_starts = {match.start() for match in literal_matches}
++        for match in ANY_REQUIRE.finditer(content):
++            if match.start() in literal_starts:
++                continue
++            line = content.count("\n", 0, match.start()) + 1
++            key = f"{relative}:{line}"
++            seen_dynamic.add(key)
++            if key not in allowlist:
++                errors.append(f"{key}: dynamic require is not in the reviewed allowlist")
++
++    stale_allowlist = sorted(allowlist - seen_dynamic)
++    errors.extend(f"{entry}: stale dynamic-require allowlist entry" for entry in stale_allowlist)
++    return errors
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
++    args = parser.parse_args()
++    root = args.root.resolve()
++    try:
++        errors = inspect(root)
++    except (OSError, ValueError, json.JSONDecodeError) as error:
++        print(f"ownership check failed: {error}", file=sys.stderr)
++        return 2
++    if errors:
++        print("ownership check failed:")
++        for error in errors:
++            print(f"  {error}")
++        return 1
++    modules = sum(1 for _ in (root / "lua" / "workbench").rglob("*.lua"))
++    print(f"Ownership boundaries valid for {modules} workbench Lua modules; dynamic-require allowlist is reviewed.")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+
+diff --git a/tests/test_harness_tools.py b/tests/test_harness_tools.py
+new file mode 100644
+index 0000000..10c7afd
+--- /dev/null
++++ b/tests/test_harness_tools.py
+@@ -0,0 +1,86 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++import subprocess
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++CHECKER = ROOT / "tests" / "check_ownership.py"
++SPEC = importlib.util.spec_from_file_location("check_ownership", CHECKER)
++assert SPEC and SPEC.loader
++CHECKER_MODULE = importlib.util.module_from_spec(SPEC)
++sys.modules[SPEC.name] = CHECKER_MODULE
++SPEC.loader.exec_module(CHECKER_MODULE)
++
++
++class OwnershipGuardTests(unittest.TestCase):
++    def make_tree(self, root: Path) -> None:
++        (root / "lua" / "workbench" / "core").mkdir(parents=True)
++        (root / "tests" / "runtime").mkdir(parents=True)
++        (root / "tests" / "runtime" / "require_allowlist.json").write_text("[]\n")
++
++    def test_allowed_core_dependency_passes(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            self.make_tree(root)
++            (root / "lua" / "workbench" / "core" / "model.lua").write_text(
++                'local item = require("workbench.core.item")\nreturn item\n'
++            )
++            self.assertEqual(CHECKER_MODULE.inspect(root), [])
++
++    def test_ui_internal_composition_is_allowed_but_provider_import_is_not(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            self.make_tree(root)
++            ui = root / "lua" / "workbench" / "ui"
++            ui.mkdir()
++            (ui / "layout.lua").write_text('require("workbench.ui.view")\n')
++            (ui / "view.lua").write_text('require("workbench.ui.projection")\n')
++            self.assertEqual(CHECKER_MODULE.inspect(root), [])
++            (ui / "bad.lua").write_text('require("workbench.providers.fs")\n')
++            self.assertIn("ui may not import workbench.providers", CHECKER_MODULE.inspect(root)[0])
++
++    def test_forbidden_provider_to_ui_dependency_fails(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            self.make_tree(root)
++            provider = root / "lua" / "workbench" / "providers"
++            provider.mkdir()
++            (provider / "fs.lua").write_text('require("workbench.ui.tree")\n')
++            self.assertIn("providers may not import workbench.ui", CHECKER_MODULE.inspect(root)[0])
++
++    def test_dynamic_require_requires_exact_review_entry(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            self.make_tree(root)
++            source = root / "lua" / "workbench" / "core" / "dynamic.lua"
++            source.write_text("local module_name = 'x'\nrequire(module_name)\n")
++            self.assertIn("dynamic require is not in the reviewed allowlist", CHECKER_MODULE.inspect(root)[0])
++            allowlist = root / "tests" / "runtime" / "require_allowlist.json"
++            allowlist.write_text(json.dumps(["lua/workbench/core/dynamic.lua:2"]))
++            self.assertEqual(CHECKER_MODULE.inspect(root), [])
++
++    def test_cli_returns_nonzero_for_broken_boundary(self) -> None:
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            self.make_tree(root)
++            provider = root / "lua" / "workbench" / "providers"
++            provider.mkdir()
++            (provider / "bad.lua").write_text('require("workbench.controllers.files")\n')
++            result = subprocess.run(
++                [sys.executable, str(CHECKER), "--root", str(root)],
++                text=True,
++                capture_output=True,
++                check=False,
++            )
++            self.assertEqual(result.returncode, 1)
++            self.assertIn("ownership check failed", result.stdout)
++
++
++if __name__ == "__main__":
++    unittest.main()
+
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..ac7d374
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,46 @@
++NVIM_CURRENT ?= nvim
++NVIM_MIN ?= .test-deps/neovim-0.11.7/bin/nvim
++PYTHON ?= .test-deps/venv/bin/python
++ROOT := $(CURDIR)
++DEPS := $(ROOT)/.test-deps
++
++.PHONY: bootstrap test test-integration test-ui test-e2e bench check-ownership fixtures
++
++bootstrap:
++	sh tests/bootstrap.sh
++
++test: bootstrap
++	set -eu; for nvim_bin in "$(NVIM_MIN)" "$(NVIM_CURRENT)"; do \
++	  echo "== mini.test on $$nvim_bin =="; \
++	  WORKBENCH_TEST_DEPS="$(DEPS)" NVIM_TEST_BINARY="$$nvim_bin" \
++	    "$$nvim_bin" --clean --headless -u tests/runtime/minimal_init.lua -l tests/runtime/run.lua; \
++	done
++
++test-integration: bootstrap
++	"$(PYTHON)" -m unittest discover -s tests -p 'test_*.py' -v
++	python3 scripts/check_plan.py
++
++test-ui: bootstrap
++	set -eu; for nvim_bin in "$(NVIM_MIN)" "$(NVIM_CURRENT)"; do \
++	  echo "== RPC UI grids on $$nvim_bin =="; \
++	  "$(PYTHON)" tests/e2e/driver.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim "$$nvim_bin"; \
++	  "$(PYTHON)" tests/e2e/wb06_lifecycle.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim "$$nvim_bin"; \
++	done
++
++test-e2e: bootstrap
++	"$(PYTHON)" tests/e2e/driver.py --self-test --nvim "$(NVIM_CURRENT)"
++	"$(PYTHON)" tests/e2e/driver.py --grid-sizes 80x24 --nvim "$(NVIM_MIN)"
++	"$(PYTHON)" tests/e2e/driver.py --host --grid-sizes 80x24 --nvim "$(NVIM_CURRENT)"
++
++bench: bootstrap
++	"$(PYTHON)" bench/fixtures.py --tier tiny
++	"$(PYTHON)" bench/fixtures.py --tier normal
++	"$(PYTHON)" bench/fixtures.py --tier stress
++	"$(PYTHON)" bench/fixtures.py --tier pathological
++	"$(PYTHON)" bench/startup.py --runs 20 --nvim "$(NVIM_CURRENT)"
++
++fixtures:
++	"$(PYTHON)" bench/fixtures.py --tier $(TIER) $(if $(OUTPUT),--output "$(OUTPUT)")
++
++check-ownership:
++	python3 tests/check_ownership.py
+

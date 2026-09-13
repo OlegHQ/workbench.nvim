@@ -1,0 +1,47 @@
+{
+  "task": "WB-02",
+  "revision": "Tested autoconf.nvim dirty tree based on 5a87cf0b40b43705357db892a1b07a40d418363c; complete code diff SHA-256 6d41b875f45a06eec0851e0d8f1584ba945a6a329f51ab488829bb814ef3709d in docs/evidence/WB-02-autoconf.diff. Host nvim-config HEAD 64dceb4df6ac4d3e9b571146101c00947c143b12; workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim minimum 0.11.7 and current host 0.12.4; Python 3.14.6; installed Blink 1.10.2 and conform.nvim 9.1.0-unstable-2026-08-11. No runtime dependencies added.",
+  "summary": "Repaired Autoconf-owned completion, formatting, LSP, autocmd and soft-wrap behavior. Partial Blink options keep unrelated fields at Blink defaults, dynamic getters make supported TOML toggles live, and status reports when Blink's active config cannot be introspected publicly. One named BufWritePre hook lazily invokes Conform with LSP fallback; no Conform save hook is registered. Configured LSP capabilities precede client initialization, LSP toggles target only Autoconf-configured server names, and foreign LSP handlers/autocmds are preserved. Current-host tests observed actual Blink/Conform behavior and captured fake-server initialize capabilities. The warm 20-pair benchmark showed no startup/first-input regression. Linux was not available; Nix configuration was unchanged.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "Review autoconf.nvim diff and module ownership; run git diff --check.",
+      "result": "All implementation changes are confined to Autoconf-owned lua/autoconf/sys/ and tests/. Resolver groups own and clear only their named autocmds; handler wrappers restore prior functions only while still owned; LSP configuration owns only language entries in languages.toml; formatting invokes public Conform/LSP APIs on demand. The fake LSP, temporary buffers/files and external test client are stopped or removed by their test owner. No cross-repository runtime dependency, global protocol monkey-patch, blanket autocmd clear or new runtime dependency was introduced. The exact tested dirty-tree patch is included as docs/evidence/WB-02-autoconf.diff.",
+      "artifacts": [
+        "docs/evidence/WB-02-autoconf.diff"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "In autoconf.nvim, run sh tests/run.sh and NVIM_BIN=$(command -v nvim) sh tests/host.sh.",
+      "result": "Feature and missing-optional-dependency tests passed on Neovim 0.11.7 and 0.12.4. They cover completion false/true, keyword length, path source, preview insertion, snippets, save-before-InsertEnter, auto-format false, no duplicate Conform hook, unsupported Blink/Conform reporting, LSP fallback, requested/effective/restart-required status, and soft-wrap false. The installed-host integration passed on Neovim 0.12.4: real Blink 1.10.2 dynamic fields changed as configured; real Conform formatted a saved buffer; a fake LSP captured snippetSupport=true before InsertEnter; configured server enable/disable preserved an independent client; health output reflected current settings.",
+      "artifacts": []
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "Run sh tests/run.sh and NVIM_BIN=$(command -v nvim) sh tests/host.sh; inspect named autocmd groups and test client cleanup.",
+      "result": "Three repeated enable/disable cycles left one-or-zero expected owned format/hover/signature hooks; unrelated save and hover callbacks survived disable and continued to run. Repeated setup did not duplicate deferred completion setup. The external LSP client remained attached across configured-server disable/re-enable, and an independently replaced message handler was not overwritten during restore. Test-owned temporary files and fake LSP processes were cleaned up.",
+      "artifacts": []
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Compare WB-01 make bench NVIM_CURRENT=nvim baseline against make bench NVIM_CURRENT=nvim after the Autoconf changes; inspect a fresh --startuptime log.",
+      "result": "Twenty warm interleaved host/plugin-free pairs on the same Macmini9,1 showed host p50/p95 startup marker 43.232/45.089 ms (WB-01: 45.421/54.632), process wall 62.716/66.449 ms (64.255/76.544), first UI frame 58.734/61.267 ms (62.344/79.442), and first input 1.835/2.061 ms (2.023/3.155). No measured regression; host startup remained under 150 ms. A fresh /tmp/autoconf-startup.X4GXmw profile showed the changed completion, LSP, formatting and UI modules each below 0.6 ms, none above the 5 ms review threshold; Blink UI and Conform remained unloaded at startup. Candidate samples were warm; cold-cache timing was not measured. Full local benchmark artifacts are at .bench-output/startup/20260912T133049Z-baseline-a41cd0/baseline.json.",
+      "artifacts": [
+        ".bench-output/startup/20260912T133049Z-baseline-a41cd0/baseline.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "Run sh tests/run.sh for minimum/current Neovim, then run NVIM_BIN=$(command -v nvim) sh tests/host.sh against installed optional plugins.",
+      "result": "Neovim 0.11.7 and 0.12.4 both passed isolated feature and missing-Blink/Conform tests. Current-host integration passed against the installed Blink 1.10.2 and Conform 9.1.0-unstable-2026-08-11 APIs. Unsupported optional dependencies produced unavailable status instead of success. Linux and Nix build/activation were not run; this task changes neither themes, Nix files nor host defaults.",
+      "artifacts": []
+    }
+  ]
+}

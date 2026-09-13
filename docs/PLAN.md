@@ -2,7 +2,7 @@
 
 ## Execution Entry
 
-This plan is the implementation handoff. Runtime work has not started. Read [AGENTS.md](../AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRACTS.md](CONTRACTS.md) and [VALIDATION.md](VALIDATION.md), then select a ready task from [tasks.json](tasks.json).
+This plan is the implementation handoff. Runtime feature work starts after WB-01 establishes local validation. Read [AGENTS.md](../AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRACTS.md](CONTRACTS.md) and [VALIDATION.md](VALIDATION.md), then select a ready task from [tasks.json](tasks.json).
 
 ```sh
 python3 scripts/check_plan.py
@@ -14,6 +14,8 @@ The manifest is authoritative for dependencies, required gates, task status and 
 The user's requested milestone bounds execution. A request to implement the next task does not imply implementing every deferred feature. An agent can complete prerequisites within a requested milestone without asking again. Keep one active task by default; broader concurrent ownership is only used when explicitly authorized.
 
 All validation runs locally. Do not add GitHub Actions or other hosted CI. Runtime acceptance requires local Neovim end-to-end tests, not just unit tests or direct controller calls.
+
+The completed implementation audit is recorded in [CORE-REVIEW.md](evidence/CORE-REVIEW.md). It supplements historical task records with current-checkout failure, lifecycle, real-provider, UI, compatibility and performance evidence for WB-01 through WB-24.
 
 ## Document Map
 
@@ -35,8 +37,7 @@ All validation runs locally. Do not add GitHub Actions or other hosted CI. Runti
 | Foundation | Tested models, ownership and explorer decision | WB-01..WB-06 |
 | Exploration | Files -> scoped search -> preview -> open -> return -> resume | WB-01..WB-11 |
 | Discovery | Outline, workspace symbols, references, calls and Problems | Exploration plus WB-12..WB-17 |
-| Host rollout | Explicitly configured, themed and reproducibly installed | Exploration plus WB-19, WB-24, WB-25 |
-| Core workbench | Dirty-buffer search, settings, Git, reviewed operations, persistence | WB-01..WB-26 |
+| Core workbench | Dirty-buffer search, settings, Git, reviewed operations, persistence | WB-01..WB-24 |
 | Follow-on | Multi-root, tasks, tests/debug, remote/structural capabilities | Separate promoted tasks WB-27..WB-30 |
 
 Do not implement a wide API shell before a usable journey. Build Files with the minimum projection it needs; use Outline to validate reuse. Stop extending an abstraction when it no longer reduces real duplication. Correctness and lifetime paths ship with each feature, not in a final cleanup sprint.
@@ -63,7 +64,7 @@ Test two branches, editor focus, resize, reopen selection and cleanup; inspect e
 
 ### WB-04
 
-**Resource, location and workspace model.** Owner: workbench core/services. Depends on WB-01. Implement CONTRACTS resource/location/workspace types and root policy as concrete modules with tests. Add injected root/ignore services and prove containment, aliases, nested repos, cwd independence and single-root capability limits. Keep LSP encoding unconverted until target text is available.
+**Resource, location and workspace model.** Owner: workbench core/services. Depends on WB-01. Implement CONTRACTS resource/location/workspace types and root policy as concrete modules with tests. Add injected root/ignore services and prove containment, aliases, nested repos, cwd independence and single-root capability limits. Keep LSP encoding unconverted until target text is available. Establish shared file/search policy fixtures; until WB-07/WB-09 adapters exist and prove parity, their filtering behavior remains unavailable rather than independently inferred.
 
 Test UTF-16/UTF-8 coordinates, escaped URI paths, symlink cycles and root generation changes. Establish shared file/search policy test fixtures; document unresolved adapter limitations as unavailable behavior rather than silently inconsistent scope. Done when two independent consumers can obtain the same explicit workspace snapshot without reading ambient cwd.
 
@@ -107,7 +108,7 @@ Verify every state in UX Search, including disk-vs-unsaved warning, cancellation
 
 **Exploration acceptance checkpoint.** Owner: workbench integration. Depends on WB-02/WB-07/WB-08/WB-10. Run UX-01..04 and UX-06..09/11 on real fixtures; exercise the search -> preview -> open -> return -> resume portion of UX-05. Review public API boundaries and compare startup/first-use budgets.
 
-Fix failures before adding semantic features. Record a concise terminal walkthrough and resource/performance evidence. Done means a usable exploration capability in an isolated runtime. It does not mean the Nix host default was enabled; WB-25 owns that release gate.
+Fix failures before adding semantic features. Record a concise terminal walkthrough and resource/performance evidence. Done means a usable exploration capability in an isolated runtime. It does not mean the Nix host default was enabled.
 
 ### WB-12
 
@@ -187,17 +188,11 @@ Test corrupt/version-mismatched JSON, missing roots, permission failures, two Ne
 
 Check truncation, keyboard reachability, mouse targets, focus contrast and loading/error states. Done when screenshots and focus assertions establish readable nonoverlapping UI in the actual Neovim grid. Keep RGB definitions in theme files, not workbench Lua.
 
-### WB-25
+## Removed Release Tasks
 
-**Native submodule/Nix runtime integration and rollout.** Owner: nvim-config, with plugin/Nix repositories as needed. Depends on WB-11/WB-19/WB-24. Follow INTEGRATION: public API adapter, deliberate default mapping migration, runtime flake input and both installation paths, exact published SHA/gitlink/pin checks, clean recursive clone and host evaluation/build/activation.
+WB-25 (runtime packaging and rollout) and WB-26 (core release acceptance) were removed at the user's request on 2026-09-13. Core now consists of WB-01 through WB-24, with their existing behavior, lifecycle, UX, performance, compatibility and mutation gates intact. The host-rollout milestone is removed. Follow-on tasks depend directly on the retained core tasks and remain deferred.
 
-Preserve previous runtime settings/pins for rollback and test disable cleanup. Missing Nix checkout remains a specific unresolved release gate. Done when the configured host actually runs the exploration loop and a fresh install reproduces it. Publishing docs or adding a gitlink alone cannot pass this task.
-
-### WB-26
-
-**Core workbench release acceptance.** Owner: workbench/host integration. Depends on WB-17..WB-25 as listed in the manifest. Execute all applicable UX scenarios, mutation recovery tests, minimum/current Neovim, Linux/macOS and final reference-host performance runs. Inspect import/resource ownership manually as well as automatically.
-
-Resolve all required failures, document explicit unsupported features, publish reproducible plugin/parent revisions and record rollback steps. Done when the `core` milestone check passes and evidence establishes a working system. A green planning validator is never sufficient.
+Existing implementation and historical WB-25 evidence are retained for inspection; they do not prove publication or host activation. Publication, exact Nix pin/gitlink parity, fresh-install reproduction and host activation are outside this implementation review. The integration runbook remains applicable to any separately requested release. The current review covers the implemented core, real Neovim journeys and failure paths, including existing public runtime integration.
 
 ## Deferred Capability Specifications
 

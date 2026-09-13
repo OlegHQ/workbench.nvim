@@ -1,0 +1,66 @@
+{
+  "task": "WB-06",
+  "revision": "Dirty workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a; implementation and test diff: docs/evidence/WB-06-ui.diff (SHA-256 12c5e0141741b0d6092aad1f55f05dad80ef4b72278545f7d842b4f574f24dad).",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 (minimum) and 0.12.4 (host/current); Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1. Clean isolated Neovim RPC UI processes for grid tests.",
+  "summary": "Implemented native sidebar/results layouts, owned view lifecycles and reusable stable-ID tree/list projection. Renderers consume supplied models only; no provider or filesystem work is imported. UI tests, lifecycle/geometry gates and local performance targets pass.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "python3 tests/check_ownership.py; review imports with rg -n 'require\\(' lua/workbench/ui",
+      "result": "Ownership checker validated 12 Lua modules and the reviewed dynamic-require allowlist. UI implementation dependencies are limited to workbench.core.scope, workbench.ui.view and workbench.ui.projection; no providers, controllers, services, capabilities or filesystem adapters are imported by rendering/layout code. Task-owned paths are lua/workbench/ui/, tests/ and Makefile; no hosted CI was added.",
+      "artifacts": ["docs/evidence/WB-06-ui.diff"]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "31 mini.test cases passed on Neovim 0.11.7 and 0.12.4, including five projection tests covering tree order/expansion, stable selection reconciliation, list ordering/caps, cycles/duplicate IDs and malformed sparse/keyed arrays. The integration suite passed all 21 Python tests and the plan structure validator.",
+      "artifacts": ["tests/runtime/test_ui_projection.lua", "docs/evidence/WB-06-ui.diff"]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test-ui",
+      "result": "Across all eight real-Neovim RPC runs, queued rendering was rejected after TabClosed, the original modified user buffer and foreign autocmd survived, resize preserved the selected preview row and editor focus, and each run completed 100 mount/close cycles with final owned resource_count=0. Keyboard close returned focus to the originating editor window.",
+      "artifacts": [
+        ".test-output/e2e/wb06/20260912T152739Z-160x50-f0a54f/result.json",
+        ".test-output/e2e/wb06/20260912T152740Z-120x35-f6aac3/result.json",
+        ".test-output/e2e/wb06/20260912T152740Z-60x20-7e8bb7/result.json",
+        ".test-output/e2e/wb06/20260912T152740Z-80x24-87afe7/result.json",
+        ".test-output/e2e/wb06/20260912T152741Z-120x35-aa2e6e/result.json",
+        ".test-output/e2e/wb06/20260912T152741Z-160x50-72f28c/result.json",
+        ".test-output/e2e/wb06/20260912T152741Z-80x24-5a5868/result.json",
+        ".test-output/e2e/wb06/20260912T152742Z-60x20-ccabee/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "make test-ui (Neovim 0.11.7 and 0.12.4; 160x50, 120x35, 80x24 and 60x20)",
+      "result": "All eight grid runs passed: sidebar split at widths >=93 and overlay at narrower widths; results used bottom splits when height allowed and overlay at 60x20. Mouse and keyboard selection/activation, tree expansion, keyboard help, prompt protection, stable-ID selection across model updates, display-cell truncation (30-cell label in a 32-cell panel), idle/loading/error/empty/unavailable rows and six semantic highlight links before/after colorscheme change passed. Preview row 21 remained selected and visible through resize. First interactive view measured 2.759–4.074ms across the matrix.",
+      "artifacts": [
+        "tests/e2e/wb06_lifecycle.py",
+        ".test-output/e2e/wb06/20260912T152739Z-160x50-f0a54f/result.json",
+        ".test-output/e2e/wb06/20260912T152740Z-120x35-f6aac3/result.json",
+        ".test-output/e2e/wb06/20260912T152740Z-60x20-7e8bb7/result.json",
+        ".test-output/e2e/wb06/20260912T152740Z-80x24-87afe7/result.json",
+        ".test-output/e2e/wb06/20260912T152741Z-120x35-aa2e6e/result.json",
+        ".test-output/e2e/wb06/20260912T152741Z-160x50-72f28c/result.json",
+        ".test-output/e2e/wb06/20260912T152741Z-80x24-5a5868/result.json",
+        ".test-output/e2e/wb06/20260912T152742Z-60x20-ccabee/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Neovim 0.11.7 and 0.12.4: --clean --headless -l tests/bench_ui.lua; host startup profile: .test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim",
+      "result": "UI microbenchmark (p50/p95): 0.11.7 cold require+mount 4.871ms; warm 20-item mount/close 2.680/2.937ms; list projection 10k 1.708/2.108ms; tree projection 10k 2.731/2.988ms; cached selection/render action 225/249µs. 0.12.4: cold require+mount 5.217ms; warm mount/close 2.720/3.044ms; list 10k 1.258/2.219ms; tree 10k 2.916/3.087ms; cached action 227/250µs. Both benchmark runs completed 100 lifecycle cycles with zero resources. Twenty-run host startup profile: startup marker p50/p95 43.242/44.124ms (<150ms budget), first UI frame 58.303/61.589ms and first input state 1.793/1.940ms. The workbench plugin entrypoint sourced in 0.138ms; no workbench startup row exceeded 5ms. UI was already enabled only when mounting in the isolated feature benchmark; no filesystem work is included in renderer paths. Startup profile cache was warm/interleaved; cold OS-cache behavior was not measured.",
+      "artifacts": [
+        "tests/bench_ui.lua",
+        ".bench-output/startup/20260912T152446Z-baseline-c5e78e/baseline.json",
+        ".bench-output/startup/20260912T152446Z-baseline-c5e78e/startup-000-host/startup.log"
+      ]
+    }
+  ]
+}

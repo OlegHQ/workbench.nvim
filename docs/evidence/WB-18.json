@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "task": "WB-18",
+  "revision": "Cumulative authorized dirty WB-01..WB-18 worktree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a. docs/evidence/WB-18.dirty.diff records the full worktree delta, including untracked implementation/tests and final task/evidence records, while excluding only the diff file itself. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; minimum Neovim 0.11.7 and current/host Neovim 0.12.4; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1, ripgrep available. Linux was unavailable locally.",
+  "summary": "Implemented bounded named-buffer listing and immutable UTF-8 working-set snapshots that retain source buffer identity, changedtick, encoding, EOL/fileformat/BOM metadata and exact content. Workspace/folder search now overlays modified in-scope snapshots using aggregate ripgrep runs with disk results filtered by ripgrep file eligibility and merged by URI; explicit open-buffer search searches all named loaded buffers, including external/unlisted and ignored files, from one aggregate snapshot set. Added a lazy, injected buffer-list-controller factory to preserve controller ownership boundaries, exact-buffer navigation, stale-snapshot rejection and bounded cancellation/cleanup. Search headers identify scope and source set; total matching-engine failure remains error while mixed lane failure is partial.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-18 allowed paths and task-owned source/test changes",
+      "result": "Ownership validation passed for all 31 Lua modules and the reviewed dynamic-require allowlist. WB-18 source changes are within lua/workbench/providers/, lua/workbench/controllers/ and lua/workbench/services/; tests are under tests/. Search receives the buffer-list factory as an injected capability instead of importing another controller. The cumulative dirty-tree snapshot is retained; no commit or push was made.",
+      "artifacts": [
+        "docs/evidence/WB-18.dirty.diff",
+        "docs/tasks.json",
+        "tests/check_ownership.py",
+        "lua/workbench/controllers/search.lua",
+        "lua/workbench/controllers/buffers.lua",
+        "lua/workbench/services/buffers.lua"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; inspect tests/runtime/test_buffers_service.lua, tests/runtime/test_search_buffers.lua and tests/runtime/test_results_navigation.lua",
+      "result": "All 117 mini.test cases passed on both Neovim 0.11.7 and 0.12.4. Coverage includes dirty/saved merge and URI supersession, ignored/excluded paths, external disk edits behind clean loaded buffers, explicit in-memory open-buffer scope, unnamed/special exclusions, CRLF with no final newline, BOM and fileencoding metadata, edit-after-capture rejection, exact-buffer open/return, and bounded aggregate process counts.",
+      "artifacts": [
+        "tests/runtime/test_buffers_service.lua",
+        "tests/runtime/test_search_buffers.lua",
+        "tests/runtime/test_results_navigation.lua",
+        "tests/runtime/test_search_controller.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect the repeated cancellation case in tests/runtime/test_search_buffers.lua",
+      "result": "Twenty-five consecutive dirty-search cancellations each cancelled all three aggregate requests (75 total), immediately removed the staged snapshot directory, left no active request/runner scope, and ignored a late batch callback without adding results to the cancelled set. Search/controller teardown ended with zero views and provider handles.",
+      "artifacts": [
+        "tests/runtime/test_search_buffers.lua",
+        "tests/e2e/wb18_working_set.py"
+      ]
+    },
+    {
+    "id": "G3",
+    "status": "pass",
+    "command": ".test-deps/venv/bin/python tests/e2e/wb18_working_set.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim .test-deps/neovim-0.11.7/bin/nvim; repeat with --nvim nvim; run --normal-fixture at 160x50 on both versions; run tests/e2e/wb10_search.py at 80x24 on both versions",
+    "result": "The final RPC/ext_linegrid journey passed at all four grid sizes on Neovim 0.11.7 and 0.12.4. Real key input searched dirty workspace content, verified snapshot source identity, opened and returned from the exact modified buffer, used the action palette to open/select from the recent-buffer view, and exercised disk-only and explicit open-buffer searches. User cwd and modified text were preserved; teardown left zero provider requests, layout views, buffer-list sessions and Search views. The 10,000-file normal fixture also passed its 20-sample-per-mode journey on both runtimes. The WB-10 folder-search/capped-partial regression passed at 80x24 on both after its assertion was made traversal-order tolerant while retaining the expected bounded partial range and source coverage.",
+    "artifacts": [
+      "tests/e2e/wb18_working_set.py",
+      "tests/e2e/wb10_search.py",
+      ".test-output/e2e/wb18/20260913T023355Z-160x50-8cba13/result.json",
+      ".test-output/e2e/wb18/20260913T023355Z-120x35-9edd34/result.json",
+      ".test-output/e2e/wb18/20260913T023355Z-80x24-5a580c/result.json",
+      ".test-output/e2e/wb18/20260913T023356Z-60x20-c09222/result.json",
+      ".test-output/e2e/wb18/20260913T023407Z-160x50-7ca92a/result.json",
+      ".test-output/e2e/wb18/20260913T023407Z-120x35-ad1775/result.json",
+      ".test-output/e2e/wb18/20260913T023408Z-80x24-c7d3bf/result.json",
+      ".test-output/e2e/wb18/20260913T023408Z-60x20-932fc2/result.json",
+      ".test-output/e2e/wb18/20260913T023315Z-160x50-c52c83/result.json",
+      ".test-output/e2e/wb18/20260913T023332Z-160x50-80882e/result.json",
+      ".test-output/e2e/wb18/20260913T023355Z-80x24-5a580c/workspace-dirty-grid.json",
+      ".test-output/e2e/wb18/20260913T023408Z-80x24-c7d3bf/open-buffers-grid.json",
+      ".test-output/e2e/wb10/20260913T023551Z-80x24-cbc4ec/result.json",
+      ".test-output/e2e/wb10/20260913T023555Z-80x24-eb0e16/result.json"
+    ]
+    },
+    {
+    "id": "G4",
+    "status": "pass",
+    "command": "Run tests/e2e/wb18_working_set.py --normal-fixture --grid-sizes 160x50 on Neovim 0.11.7 and 0.12.4; each mode has 20 samples, debounce is set to zero, and the generated normal fixture contains 10,000 files",
+    "result": "On the warm 10,000-file fixture, each dirty query used three fixed aggregate scans (disk, eligibility and overlay), while clean disk-only and explicit open-buffer queries each used one. Measured provider first-match batch p95 was 3.187 ms (0.11.7) / 20.100 ms (0.12.4) for dirty search and 3.738 / 11.161 ms for disk-only. Input-to-first-painted-result p95 was 22.424 / 54.414 ms for dirty search and 18.901 / 41.234 ms for disk-only, all below the 150 ms first-batch target with debounce disabled. Full-scan terminal p95 is reported separately: 189.825 / 198.203 ms dirty and 148.185 / 144.936 ms disk-only; this includes the entire 10k-file traversal and is not the first-batch metric. Open-buffer first-render p95 was 19.549 / 18.932 ms. First-shell setup measured 33.560 / 38.623 ms. The provider now streams filesystem traversal order rather than paying for global path sorting; per-file match order and dirty-URI supersession remain intact. Every run finished with zero owned requests/views/sessions.",
+    "artifacts": [
+      "docs/VALIDATION.md",
+      "tests/e2e/wb18_working_set.py",
+      ".test-output/e2e/wb18/20260913T023315Z-160x50-c52c83/result.json",
+      ".test-output/e2e/wb18/20260913T023332Z-160x50-80882e/result.json"
+    ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+    "command": "make test check-ownership test-integration; run WB-18 real-grid searches on Neovim 0.11.7 and 0.12.4",
+    "result": "The final combined gate passed: all 117 mini.test cases passed on both Neovim 0.11.7 and 0.12.4; ownership validation accepted all 31 Lua modules; all 21 Python integration/plan tests passed; scripts/check_plan.py reported a valid planning structure. Missing-ripgrep and unsupported provider-capability paths remain covered by tests/runtime/test_rg_provider.lua and tests/runtime/test_search_controller.lua. These were local macOS checks; Linux was unavailable.",
+      "artifacts": [
+        "tests/runtime/test_rg_provider.lua",
+        "tests/runtime/test_search_controller.lua",
+        "tests/e2e/wb18_working_set.py",
+        "tests/test_harness_tools.py",
+        "scripts/check_plan.py"
+      ]
+    }
+  ]
+}

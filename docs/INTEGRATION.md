@@ -8,13 +8,13 @@
 | `OlegHQ/autoconf.nvim`, dev | TOML, language configuration, editor feature lifecycle | Optional public workbench adapter |
 | `OlegHQ/themekit.nvim`, dev | Theme resolution and semantic highlight mappings | Optional theme integration |
 | `OlegHQ/nvim-config`, dev | User defaults, mappings, submodule gitlinks and Nix module | Host composition |
-| `OlegHQ/nixos-config`, main | Third-party packages/binaries and host activation | Separate checkout; absent during planning |
+| `OlegHQ/nixos-config`, dev | Third-party packages/binaries and host activation | Separate checkout; may be absent in a workspace |
 
 Locate repositories from actual Git state. The Nix checkout's documented path is `nixos-config/`; if absent, inspect known workspace configuration or ask for its location only when activation is the remaining dependent task. Do not create a fake checkout or claim `make switch` passed. Complete independent plugin tests first.
 
 ## Current Planning Delivery
 
-The planning repository has no runtime entrypoint. Adding its submodule makes docs/skills available without enabling features. Runtime flake wiring is intentionally WB-25. Do not install an empty plugin as evidence of runtime completion. Run the plan validator and its negative tests locally. Do not add GitHub Actions or other hosted CI; runtime integration acceptance uses local Neovim end-to-end tests.
+The last published Workbench revision is planning-only, while this local task workspace contains an unpublished runtime implementation. The submodule is the native runtime source locally; the root flake wiring is optional and its current lock still resolves to the planning-only SHA. Do not treat that lock as an installed runtime or install an empty plugin as evidence of completion. Run the plan validator and its negative tests locally. Do not add GitHub Actions or other hosted CI; runtime integration acceptance uses local Neovim end-to-end tests.
 
 Use `git@github.com:OlegHQ/workbench.nvim.git` in `.gitmodules`, `branch = dev`, and Git mode 160000 for the path. The parent's broad `pack` ignore rule means adding the submodule may require `git submodule add -f`; do not remove that ignore rule or stage raw plugin files. Gitlinks record exact commits; branch tracking is only an update policy. [Git submodules](https://git-scm.com/docs/git-submodule).
 
@@ -73,7 +73,7 @@ Autoconf currently recognizes a space prefix but reduces paths to their last seg
 
 Generate mapping descriptions from action metadata. Resolve user mapping precedence deterministically; report collisions without silently overwriting the user's binding. LSP-specific bindings use the actual attached buffer and method availability. Keep native motions and native jumplist keys unchanged.
 
-Candidate migration after UX gates: `Space /` to workbench search, a new conflict-free action for sidebar, `Space f` kept as quick file pick, and MiniFiles retained on its existing actions until the user deliberately replaces them. Theme picker `Space t` remains owned by host configuration. Specify final keys in tests and docs at WB-25, not in providers.
+Candidate migration after UX gates: `Space /` to workbench search, a new conflict-free action for sidebar, `Space f` kept as quick file pick, and MiniFiles retained on its existing actions until the user deliberately replaces them. Theme picker `Space t` remains owned by host configuration. Specify final keys in host tests and docs, not in providers.
 
 ## Theme Integration
 
@@ -81,7 +81,9 @@ Define semantic workbench groups: Normal, Selection, Muted, Border, Directory, M
 
 Test light and dark themes, no truecolor, missing icons, color scheme changes with views open, selection contrast and monochrome badge labels. Theme changes only update highlights; they must not invalidate provider caches or rebuild every result. Avoid adding hardcoded RGB values to workbench Lua.
 
-## Nix Runtime Wiring At WB-25
+## Optional Nix Runtime Release
+
+WB-25 and WB-26 were removed from the implementation plan by user request. This runbook applies to a separately requested release; its publication and activation steps do not block core implementation review.
 
 Add a `workbench-nvim` input with `flake = false` and explicit dev tracking in the host flake. Wire both the Home Manager `xdg.configFile` plugin source and standalone package installation path, as the other custom plugins are wired. Optional runtime dependencies remain Nix-managed; do not fetch them in `setup()` or copy third-party directories into `pack/`.
 

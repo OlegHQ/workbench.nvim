@@ -1,0 +1,1445 @@
+--- a/Makefile
++++ b/Makefile
+@@ -47,6 +47,8 @@
+ 	"$(PYTHON)" tests/e2e/wb15_calls.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim "$(NVIM_CURRENT)"
+ 	"$(PYTHON)" tests/e2e/wb16_problems.py --grid-sizes "$(WB16_GRIDS)" --nvim "$(NVIM_MIN)"
+ 	"$(PYTHON)" tests/e2e/wb16_problems.py --grid-sizes "$(WB16_GRIDS)" --nvim "$(NVIM_CURRENT)"
++	"$(PYTHON)" tests/e2e/wb19_settings.py --grid-sizes 120x35 --nvim "$(NVIM_MIN)"
++	"$(PYTHON)" tests/e2e/wb19_settings.py --grid-sizes 120x35 --nvim "$(NVIM_CURRENT)"
+ 
+ bench: bootstrap
+ 	"$(PYTHON)" bench/fixtures.py --tier tiny
+--- a/docs/tasks.json
++++ b/docs/tasks.json
+@@ -714,7 +714,8 @@
+       "allowed_paths": {
+         "workbench": [
+           "lua/workbench/",
+-          "tests/"
++          "tests/",
++          "Makefile"
+         ],
+         "autoconf": [
+           "lua/autoconf/sys/",
+@@ -735,9 +736,9 @@
+         "G5"
+       ],
+       "spec": "docs/PLAN.md#wb-19",
+-      "status": "todo",
+-      "assignee": null,
+-      "evidence": [],
++      "status": "done",
++      "assignee": "Codex",
++      "evidence": ["docs/evidence/WB-19.json"],
+       "blocker": null
+     },
+     {
+--- /dev/null
++++ b/docs/evidence/WB-19.json
+@@ -0,0 +1,79 @@
++{
++  "schema_version": 1,
++  "task": "WB-19",
++  "revision": "Workbench HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the cumulative dirty WB-01..WB-18 tree and the tested WB-19 changes; docs/evidence/WB-19.workbench.diff records the focused WB-18-to-WB-19 delta. Autoconf HEAD 5a87cf0b40b43705357db892a1b07a40d418363c plus the WB-02 baseline and tested WB-19 integration; docs/evidence/WB-19.autoconf.diff records that focused cross-repository delta. No commits or pushes were made.",
++  "environment": "macOS 26.4.1 arm64, Macmini9,1; minimum Neovim 0.11.7 and current/host Neovim 0.12.4; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1. Linux was unavailable locally.",
++  "summary": "Implemented strict Workbench settings validation/defaults, source-layer provenance and replacement, workspace/session/buffer override policy with disposal, config snapshots/restore, and an explicit read-only save refusal. Added checked completion/format-on-save/inline-diagnostics actions backed by registered host adapters. Autoconf now translates only declared kebab-case editor.workbench TOML keys, applies source-replacement atomically, reports nested/list schema health, and provides live getters/setters for the real editor state. Repeated resolution retains one registration per adapter; unsupported standalone adapters stay visible and unavailable. No root host default, keymap, runtime pin, or TOML configuration was changed.",
++  "gates": [
++    {
++      "id": "G0",
++      "status": "pass",
++      "command": "make check-ownership; inspect docs/tasks.json#WB-19 allowed paths and the focused WB-18/WB-02 baseline diffs",
++      "result": "Ownership validation passed for all 33 Workbench Lua modules. Workbench implementation and tests stay in WB-19's allowed lua/workbench/, tests/, and Makefile paths; Autoconf changes stay in lua/autoconf/sys/ and tests/. Workbench owns schema/provenance/actions while Autoconf owns TOML translation and host feature adapters. No host defaults or Nix/runtime wiring changed.",
++      "artifacts": [
++        "docs/evidence/WB-19.workbench.diff",
++        "docs/evidence/WB-19.autoconf.diff",
++        "docs/tasks.json",
++        "Makefile",
++        "tests/check_ownership.py"
++      ]
++    },
++    {
++      "id": "G1",
++      "status": "pass",
++      "command": "make test; sh ../autoconf.nvim/tests/run.sh",
++      "result": "All 123 Workbench mini.test cases passed on Neovim 0.11.7 and 0.12.4. The six settings cases cover false/list preservation, schema/range/unknown-key errors, source provenance and replacement, override precedence and disallowed scopes, snapshots/restore, invalid setup atomicity, unavailable adapters, setter rollback, read-only save refusal, and disposal. Autoconf feature/integration/optional-dependency tests passed on both Neovim versions.",
++      "artifacts": [
++        "tests/runtime/test_settings.lua",
++        "tests/runtime/test_core_actions.lua",
++        "tests/e2e/wb19_settings.py",
++        "docs/evidence/WB-19.autoconf.diff"
++      ]
++    },
++    {
++      "id": "G2",
++      "status": "pass",
++      "command": "make test; inspect the repeated Autoconf setup, adapter rollback, invalid configuration, and disposal assertions in the Workbench and Autoconf integration suites",
++      "result": "Three consecutive TOML resolutions retain exactly three adapter ownership entries and preserve the live editor values. Unknown nested TOML does not partially apply; replacing the TOML source restores omitted settings to their default or lower-precedence source provenance. Failed host setters restore the prior requested/effective value. Format toggles preserve the sibling BufWritePre hook, and disposal removes only the settings/palette resources while Search remains active.",
++      "artifacts": [
++        "tests/runtime/test_settings.lua",
++        "docs/evidence/WB-19.autoconf.diff"
++      ]
++    },
++    {
++      "id": "G3",
++      "status": "pass",
++      "command": ".test-deps/venv/bin/python tests/e2e/wb19_settings.py --grid-sizes 120x35 --nvim .test-deps/neovim-0.11.7/bin/nvim; repeat with --nvim nvim",
++      "result": "The real RPC/ext_linegrid UI test passed on minimum and host Neovim. It opens the action palette, confirms the standalone adapter reason, then uses keyboard filtering and Enter to toggle completion, formatting, and diagnostics through the shared registry. Effective values changed, the checked state rendered, user focus returned, the unrelated Search view stayed mounted, and settings cleanup left no palette view. Results are retained in .test-output/e2e/wb19/20260913T031543Z-120x35-807748 and 20260913T031543Z-120x35-925cfa.",
++      "artifacts": [
++        "tests/e2e/wb19_settings.py",
++        ".test-output/e2e/wb19/20260913T031543Z-120x35-807748/result.json",
++        ".test-output/e2e/wb19/20260913T031543Z-120x35-925cfa/result.json"
++      ]
++    },
++    {
++      "id": "G4",
++      "status": "pass",
++      "command": "nvim --headless --startuptime /tmp/wb19-startup-final-20260913.log -c 'qa!'; inspect Workbench action timings in both WB-19 RPC UI result.json files",
++      "result": "Host startup reached NVIM STARTED at 46.636 ms, below the 150 ms budget; importing the registered editor.workbench resolver took 0.182 ms. The opt-in Workbench remains lazy when absent from host configuration. Input-to-effective-state latency for the three settings actions measured 1.995–2.813 ms on Neovim 0.11.7 and 2.371–4.553 ms on 0.12.4, below the 150 ms interaction budget.",
++      "artifacts": [
++        "docs/evidence/WB-19-startup.txt",
++        "tests/e2e/wb19_settings.py",
++        ".test-output/e2e/wb19/20260913T031543Z-120x35-807748/result.json",
++        ".test-output/e2e/wb19/20260913T031543Z-120x35-925cfa/result.json"
++      ]
++    },
++    {
++      "id": "G5",
++      "status": "pass",
++      "command": "make check-ownership test-integration; sh ../autoconf.nvim/tests/run.sh; NVIM_BIN=$(command -v nvim) sh ../autoconf.nvim/tests/host.sh",
++      "result": "Ownership checks passed for 33 Workbench modules; all 21 Python plan/harness integration tests passed and scripts/check_plan.py reported a valid graph. Autoconf's full test and workbench adapter suite passed on Neovim 0.11.7 and 0.12.4; the host integration passed on 0.12.4 and observed real completion, formatting-hook, and diagnostic Neovim state. Checks ran on macOS; Linux was unavailable.",
++      "artifacts": [
++        "tests/check_ownership.py",
++        "tests/test_plan.py",
++        "scripts/check_plan.py",
++        "docs/evidence/WB-19.autoconf.diff"
++      ]
++    }
++  ]
++}
+--- /dev/null
++++ b/docs/evidence/WB-19-startup.txt
+@@ -0,0 +1,8 @@
++Command: nvim --headless --startuptime /tmp/wb19-startup-final-20260913.log -c 'qa!'
++Host: macOS 26.4.1 arm64, Neovim 0.12.4
++
++--- NVIM STARTED ---: 46.636 ms (host budget: <150 ms)
++require('autoconf.sys.resolvers.editor.workbench'): 0.182 ms
++
++Workbench is not enabled by the host configuration, so its implementation remains
++lazy; the explicitly registered Autoconf resolver adds less than 1 ms at startup.
+--- a/lua/workbench/core/actions.lua
++++ b/lua/workbench/core/actions.lua
+@@ -253,8 +253,11 @@
+     return error_result("invalid_arguments", "args must be a table")
+   end
+ 
+-  local ok, result = pcall(record.action.run, context or {}, vim.deepcopy(args))
++  local ok, result, run_error = pcall(record.action.run, context or {}, vim.deepcopy(args))
+   if not ok then return error_result("action_error", message(result)) end
++  if result == nil and type(run_error) == "table" and type(run_error.code) == "string" and type(run_error.message) == "string" then
++    return error_result(run_error.code, message(run_error.message))
++  end
+   return { ok = true, value = result }
+ end
+ 
+--- a/lua/workbench/compose.lua
++++ b/lua/workbench/compose.lua
+@@ -1,5 +1,7 @@
+ local Scope = require("workbench.core.scope")
+ local ActionRegistry = require("workbench.core.actions")
++local Settings = require("workbench.services.settings")
++local SettingsController = require("workbench.controllers.settings")
+ 
+ local M = {}
+ local App = {}
+@@ -17,9 +19,19 @@
+ end
+ 
+ function M.new()
++  local scope = Scope.new("workbench")
++  local actions = ActionRegistry.new()
++  local settings = Settings.new()
++  local settings_controller, controller_error = SettingsController.new({ settings = settings, actions = actions, scope = scope })
++  if not settings_controller then
++    scope:dispose()
++    return nil, controller_error
++  end
+   return setmetatable({
+-    scope = Scope.new("workbench"),
+-    actions = ActionRegistry.new(),
++    scope = scope,
++    actions = actions,
++    settings = settings,
++    settings_controller = settings_controller,
+     capabilities = {},
+     state = "disabled",
+     disposed = false,
+@@ -29,10 +41,50 @@
+ function App:set_enabled(enabled)
+   if self.disposed then return nil, error_value("app_disposed", "workbench application has been disposed") end
+   if type(enabled) ~= "boolean" then return nil, error_value("invalid_config", "enabled must be boolean") end
++  return self:configure({ enabled = enabled })
++end
++
++function App:configure(config, options)
++  if self.disposed then return nil, error_value("app_disposed", "workbench application has been disposed") end
++  local configured, configure_error = self.settings:configure(config, options)
++  if not configured then return nil, configure_error end
++  local enabled = self.settings:get("enabled").effective
+   self.state = enabled and "enabled" or "disabled"
+   return true
+ end
+ 
++function App:get_config()
++  return self.settings:config_snapshot()
++end
++
++function App:restore_config(snapshot)
++  if self.disposed then return nil, error_value("app_disposed", "workbench application has been disposed") end
++  local restored, restore_error = self.settings:restore_config(snapshot)
++  if not restored then return nil, restore_error end
++  local enabled = self.settings:get("enabled").effective
++  self.state = enabled and "enabled" or "disabled"
++  return true
++end
++
++function App:register_setting_adapter(id, adapter, options)
++  if self.disposed or not self.scope.alive then
++    return nil, error_value("app_disposed", "workbench application has been disposed")
++  end
++  if options ~= nil and type(options) ~= "table" then
++    return nil, error_value("invalid_adapter", "setting adapter options must be a table")
++  end
++  for key in pairs(options or {}) do
++    if key ~= "replace" then
++      return nil, error_value("invalid_adapter", "unknown setting adapter option: " .. tostring(key))
++    end
++  end
++  if options and options.replace ~= nil and type(options.replace) ~= "boolean" then
++    return nil, error_value("invalid_adapter", "setting adapter replace option must be boolean")
++  end
++  local opts = { scope = self.scope, replace = options and options.replace }
++  return self.settings:register_adapter(id, adapter, opts)
++end
++
+ function App:register_capability(id, installer)
+   if self.disposed or not self.scope.alive then
+     return nil, error_value("app_disposed", "workbench application has been disposed")
+@@ -115,6 +167,9 @@
+     reason = self.disposed and "disposed" or (self.state == "disabled" and "not_enabled" or nil),
+     capabilities = capabilities,
+     actions = self.actions:list(context),
++    settings = self.settings:list(context),
++    editor_settings = self.settings:adapter_snapshot(),
++    settings_controller = self.settings_controller:status(),
+     resources = self.scope:inventory(),
+   }
+ end
+@@ -124,6 +179,7 @@
+   self.disposed = true
+   self.state = "disabled"
+   self.disposal_report = self.scope:dispose()
++  self.settings:dispose()
+   return self.disposal_report
+ end
+ 
+--- a/lua/workbench/init.lua
++++ b/lua/workbench/init.lua
+@@ -3,30 +3,47 @@
+ 
+ local function normalize_config(config)
+   if config == nil then config = {} end
+-  if type(config) ~= "table" then
+-    return nil, { code = "invalid_config", message = "setup config must be a table" }
+-  end
+-  for key in pairs(config) do
+-    if key ~= "enabled" then
+-      return nil, { code = "unknown_config", message = "unknown setup option: " .. tostring(key) }
++  local Settings = require("workbench.services.settings")
++  return Settings.validate_config(config)
++end
++
++local function normalize_options(options)
++  if options == nil then return { source = "setup" } end
++  if type(options) ~= "table" then return nil, { code = "invalid_config", message = "setup metadata must be a table" } end
++  for key in pairs(options) do
++    if key ~= "source" and key ~= "replace_source" then
++      return nil, { code = "invalid_config", message = "unknown setup metadata: " .. tostring(key) }
+     end
+   end
+-  if config.enabled ~= nil and type(config.enabled) ~= "boolean" then
+-    return nil, { code = "invalid_config", message = "enabled must be boolean" }
++  if options.replace_source ~= nil and type(options.replace_source) ~= "boolean" then
++    return nil, { code = "invalid_config", message = "replace_source must be boolean" }
+   end
+-  return { enabled = config.enabled }
++  local source = options.source or "setup"
++  if type(source) ~= "string" or source == "" or #source > 64 then
++    return nil, { code = "invalid_config", message = "setup source must be a non-empty short string" }
++  end
++  return { source = source, replace_source = options.replace_source }
+ end
+ 
+-function M.setup(config)
++function M.validate_config(config)
++  return normalize_config(config)
++end
++
++function M.setup(config, options)
+   local normalized, validation_error = normalize_config(config)
+   if not normalized then return nil, validation_error end
++  local metadata, metadata_error = normalize_options(options)
++  if not metadata then return nil, metadata_error end
+   if not app then
+     local ok, compose = pcall(require, "workbench.compose")
+     if not ok then return nil, { code = "composition_error", message = tostring(compose) } end
+-    app = compose.new()
+-  end
+-  if normalized.enabled ~= nil then
+-    local ok, err = app:set_enabled(normalized.enabled)
++    local candidate, compose_error = compose.new()
++    if not candidate then return nil, compose_error or { code = "composition_error", message = "could not construct workbench" } end
++    local ok, err = candidate:configure(normalized, metadata)
++    if not ok then candidate:dispose(); return nil, err end
++    app = candidate
++  else
++    local ok, err = app:configure(normalized, metadata)
+     if not ok then return nil, err end
+   end
+   return M.get_status()
+@@ -46,14 +63,41 @@
+   return app:register_capability(id, installer)
+ end
+ 
++function M.register_setting_adapter(id, adapter, options)
++  if not app then
++    return nil, { code = "not_setup", message = "call setup() before registering setting adapters" }
++  end
++  return app:register_setting_adapter(id, adapter, options)
++end
++
++function M.get_config()
++  if not app then return nil end
++  return app:get_config()
++end
++
++function M.restore_config(snapshot)
++  if not app then return nil, { code = "not_setup", message = "workbench is not set up" } end
++  local ok, err = app:restore_config(snapshot)
++  if not ok then return nil, err end
++  return M.get_status()
++end
++
+ function M.get_status(context)
+   if not app then
++    local settings = require("workbench.services.settings").new()
++    local config = {
++      settings = settings:list(context),
++      editor_settings = settings:adapter_snapshot(),
++    }
++    settings:dispose()
+     return {
+       state = "disabled",
+       reason = "not_setup",
+       capabilities = {},
+       actions = {},
+       resources = { name = "workbench", alive = false, resources = {}, resource_count = 0, pending_callbacks = 0 },
++      settings = config.settings,
++      editor_settings = config.editor_settings,
+     }
+   end
+   return app:get_status(context)
+--- /dev/null
++++ b/lua/workbench/controllers/settings.lua
+@@ -0,0 +1,79 @@
++local M = {}
++local Controller = {}
++Controller.__index = Controller
++
++local editor_settings = {
++  { id = "completion", title = "Toggle completion", action = "settings.toggle_completion" },
++  { id = "formatting", title = "Toggle format on save", action = "settings.toggle_formatting" },
++  { id = "diagnostics", title = "Toggle inline diagnostics", action = "settings.toggle_diagnostics" },
++}
++
++local function unavailable(reason)
++  return { enabled = false, reason = reason }
++end
++
++function M.new(deps)
++  if type(deps) ~= "table" or type(deps.settings) ~= "table" or type(deps.actions) ~= "table"
++    or type(deps.actions.register) ~= "function" or type(deps.scope) ~= "table" or type(deps.scope.child) ~= "function" then
++    return nil, { code = "invalid_dependencies", message = "settings controller requires settings, actions, and an owner scope" }
++  end
++  local scope, scope_error = deps.scope:child("settings-controller")
++  if not scope then return nil, scope_error end
++  local self = setmetatable({ settings = deps.settings, actions = deps.actions, scope = scope, disposed = false }, Controller)
++
++  for _, spec in ipairs(editor_settings) do
++    local adapter_id = spec.id
++    local action = {
++      id = spec.action,
++      title = spec.title,
++      category = "Settings",
++      scope = "global",
++      available = function(context)
++        local state, err = self.settings:adapter_state(adapter_id, context)
++        if not state then return unavailable(err and err.message or "editor setting is unavailable") end
++        if not state.available then return unavailable(state.reason or "editor setting is unavailable") end
++        return { enabled = true, reason = state.state == "pending" and state.reason or nil }
++      end,
++      checked = function(context)
++        local state = self.settings:adapter_state(adapter_id, context)
++        return state ~= nil and state.effective == true
++      end,
++      args_schema = {
++        type = "object",
++        properties = { enabled = { type = "boolean" } },
++        additional_properties = false,
++      },
++      run = function(context, args)
++        local state, err = self.settings:adapter_state(adapter_id, context)
++        if not state or not state.available then
++          return nil, err or { code = "adapter_unavailable", message = state and state.reason or "editor setting is unavailable" }
++        end
++        local value = args.enabled
++        if value == nil then value = not state.effective end
++        return self.settings:set_adapter(adapter_id, value, context)
++      end,
++    }
++    local handle, register_error = self.actions:register(action, { scope = scope })
++    if not handle then
++      scope:dispose()
++      return nil, register_error
++    end
++  end
++  return self
++end
++
++function Controller:dispose()
++  if self.disposed then return false end
++  self.disposed = true
++  return self.scope:dispose()
++end
++
++function Controller:status()
++  local result = {}
++  for _, spec in ipairs(editor_settings) do
++    result[#result + 1] = self.settings:adapter_state(spec.id)
++  end
++  return { disposed = self.disposed, adapters = result, resources = self.scope:inventory() }
++end
++
++return M
+--- /dev/null
++++ b/lua/workbench/services/settings.lua
+@@ -0,0 +1,543 @@
++local M = {}
++local Settings = {}
++Settings.__index = Settings
++
++local defaults = {
++  enabled = false,
++  sidebar = {
++    position = "left",
++    width = 32,
++    views = { "files", "outline", "problems" },
++    follow_active_file = false,
++  },
++  search = {
++    debounce_ms = 80,
++    max_results = 10000,
++    hidden = false,
++    ignored = false,
++    follow_symlinks = false,
++  },
++  preview = { enabled = true, max_bytes = 262144 },
++  session = { persist = false, max_results_history = 10 },
++}
++
++local fields = {
++  enabled = { type = "boolean", scope = "global", overridable = false },
++  ["sidebar.position"] = { type = "string", values = { left = true, right = true }, scope = "session", override_scopes = { workspace = true, session = true } },
++  ["sidebar.width"] = { type = "integer", minimum = 16, maximum = 80, scope = "session", override_scopes = { workspace = true, session = true } },
++  ["sidebar.views"] = { type = "array", item_values = { files = true, outline = true, problems = true }, scope = "session", override_scopes = { workspace = true, session = true } },
++  ["sidebar.follow_active_file"] = { type = "boolean", scope = "buffer", override_scopes = { workspace = true, session = true, buffer = true } },
++  ["search.debounce_ms"] = { type = "integer", minimum = 0, maximum = 300, scope = "session", override_scopes = { workspace = true, session = true, buffer = true } },
++  ["search.max_results"] = { type = "integer", minimum = 1, maximum = 10000, scope = "session", override_scopes = { workspace = true, session = true, buffer = true } },
++  ["search.hidden"] = { type = "boolean", scope = "buffer", override_scopes = { workspace = true, session = true, buffer = true } },
++  ["search.ignored"] = { type = "boolean", scope = "buffer", override_scopes = { workspace = true, session = true, buffer = true } },
++  ["search.follow_symlinks"] = { type = "boolean", scope = "buffer", override_scopes = { workspace = true, session = true, buffer = true } },
++  ["preview.enabled"] = { type = "boolean", scope = "session", override_scopes = { workspace = true, session = true } },
++  ["preview.max_bytes"] = { type = "integer", minimum = 1024, maximum = 1048576, scope = "session", override_scopes = { workspace = true, session = true } },
++  ["session.persist"] = { type = "boolean", scope = "session", override_scopes = { session = true } },
++  ["session.max_results_history"] = { type = "integer", minimum = 1, maximum = 16, scope = "session", override_scopes = { session = true } },
++}
++
++local adapter_ids = { completion = true, formatting = true, diagnostics = true }
++local adapter_scopes = { global = true, workspace = true, session = true, buffer = true }
++local override_scopes = { workspace = true, session = true, buffer = true }
++local scope_context = { workspace = "workspace_id", session = "session_id", buffer = "bufnr" }
++
++local function copy(value)
++  return vim.deepcopy(value)
++end
++
++local function path_error(path, reason)
++  return nil, { code = "invalid_config", path = path, message = path .. " " .. reason }
++end
++
++local function is_dense_array(value)
++  if type(value) ~= "table" then return false end
++  local count, maximum = 0, 0
++  for key in pairs(value) do
++    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then return false end
++    count = count + 1
++    maximum = math.max(maximum, key)
++  end
++  return count == maximum
++end
++
++local function is_object(value)
++  return type(value) == "table" and (next(value) == nil or not is_dense_array(value))
++end
++
++local function validate_leaf(path, value)
++  local field = fields[path]
++  if not field then return path_error(path, "is not a supported setting") end
++  local kind = type(value)
++  if field.type == "array" then
++    if not is_dense_array(value) or #value == 0 then return path_error(path, "must be a non-empty array") end
++    local seen = {}
++    local result = {}
++    for index, item in ipairs(value) do
++      if type(item) ~= "string" or not field.item_values[item] then
++        return path_error(path .. "[" .. index .. "]", "must be one of files, outline, or problems")
++      end
++      if seen[item] then return path_error(path .. "[" .. index .. "]", "duplicates a view") end
++      seen[item] = true
++      result[index] = item
++    end
++    return result
++  end
++  if field.type == "integer" then
++    if kind ~= "number" then return path_error(path, "must be integer") end
++  elseif kind ~= field.type then
++    return path_error(path, "must be " .. field.type)
++  end
++  if field.type == "string" and not field.values[value] then
++    return path_error(path, "must be left or right")
++  end
++  if field.type == "integer" then
++    if value ~= value or value == math.huge or value == -math.huge then return path_error(path, "must be finite") end
++    if value % 1 ~= 0 then return path_error(path, "must be an integer") end
++    if value < field.minimum or value > field.maximum then
++      return path_error(path, string.format("must be between %d and %d", field.minimum, field.maximum))
++    end
++  end
++  return value
++end
++
++local section_fields = {
++  sidebar = { position = "sidebar.position", width = "sidebar.width", views = "sidebar.views", ["follow_active_file"] = "sidebar.follow_active_file" },
++  search = { debounce_ms = "search.debounce_ms", max_results = "search.max_results", hidden = "search.hidden", ignored = "search.ignored", follow_symlinks = "search.follow_symlinks" },
++  preview = { enabled = "preview.enabled", max_bytes = "preview.max_bytes" },
++  session = { persist = "session.persist", max_results_history = "session.max_results_history" },
++}
++
++local function validate_config(config)
++  if not is_object(config) then return nil, { code = "invalid_config", path = "config", message = "setup config must be a table" } end
++  local result = {}
++  for key, value in pairs(config) do
++    if key == "enabled" then
++      local normalized, err = validate_leaf("enabled", value)
++      if normalized == nil then return nil, err end
++      result.enabled = normalized
++    else
++      local spec = section_fields[key]
++      if not spec then return path_error("config." .. tostring(key), "is not a supported section") end
++      if not is_object(value) then return path_error(key, "must be a table") end
++      local section = {}
++      for name, item in pairs(value) do
++        local path = spec[name]
++        if not path then return path_error(key .. "." .. tostring(name), "is not a supported setting") end
++        local normalized, err = validate_leaf(path, item)
++        if normalized == nil then return nil, err end
++        section[name] = normalized
++      end
++      result[key] = section
++    end
++  end
++  return result
++end
++
++local function merge_update(base, override)
++  local result = copy(base)
++  for key, value in pairs(override) do
++    if is_object(value) and is_object(result[key] or {}) then
++      result[key] = merge_update(result[key] or {}, value)
++    else
++      result[key] = copy(value)
++    end
++  end
++  return result
++end
++
++local function record_sources(value, prefix, sources, source)
++  for key, item in pairs(value) do
++    local path = prefix == "" and tostring(key) or (prefix .. "." .. tostring(key))
++    if type(item) == "table" and not is_dense_array(item) then
++      record_sources(item, path, sources, source)
++    else
++      sources[path] = source
++    end
++  end
++end
++
++local function compose_layers(layers)
++  local ordered = {}
++  for source, layer in pairs(layers) do
++    ordered[#ordered + 1] = { source = source, layer = layer }
++  end
++  table.sort(ordered, function(left, right)
++    if left.layer.order == right.layer.order then return left.source < right.source end
++    return left.layer.order < right.layer.order
++  end)
++  local values, sources = {}, {}
++  for _, item in ipairs(ordered) do
++    values = merge_update(values, item.layer.values)
++    record_sources(item.layer.values, "", sources, item.source)
++  end
++  return values, sources
++end
++
++local function read_path(root, path)
++  local value = root
++  for part in path:gmatch("[^%.]+") do
++    if type(value) ~= "table" then return nil end
++    value = value[part]
++  end
++  return value
++end
++
++local function write_path(root, path, value)
++  local parts = {}
++  for part in path:gmatch("[^%.]+") do parts[#parts + 1] = part end
++  local current = root
++  for index = 1, #parts - 1 do
++    current[parts[index]] = current[parts[index]] or {}
++    current = current[parts[index]]
++  end
++  current[parts[#parts]] = copy(value)
++end
++
++local function owner_id(scope, id)
++  if scope == "buffer" then
++    if type(id) ~= "number" or id < 1 or id % 1 ~= 0 then return nil end
++    return tostring(id)
++  end
++  if type(id) ~= "string" or id == "" or #id > 256 then return nil end
++  return id
++end
++
++local function live_fallback(record)
++  local fallback = record.previous
++  while fallback and not fallback.active do fallback = fallback.previous end
++  return fallback
++end
++
++function M.validate_config(config)
++  return validate_config(config)
++end
++
++function M.defaults()
++  return copy(defaults)
++end
++
++function M.new()
++  return setmetatable({
++    user = {},
++    sources = {},
++    layers = {},
++    next_layer_order = 0,
++    overrides = { workspace = {}, session = {}, buffer = {} },
++    adapters = {},
++    next_id = 0,
++    disposed = false,
++  }, Settings)
++end
++
++function Settings:configure(config, options)
++  if self.disposed then return nil, { code = "settings_disposed", message = "settings service has been disposed" } end
++  if options == nil then options = {} end
++  if type(options) ~= "table" then return nil, { code = "invalid_config", message = "settings options must be a table" } end
++  for key in pairs(options) do
++    if key ~= "source" and key ~= "replace_source" then
++      return nil, { code = "invalid_config", message = "unknown settings option: " .. tostring(key) }
++    end
++  end
++  if options.replace_source ~= nil and type(options.replace_source) ~= "boolean" then
++    return nil, { code = "invalid_config", message = "replace_source must be boolean" }
++  end
++  local source = options.source or "setup"
++  if type(source) ~= "string" or source == "" or #source > 64 then
++    return nil, { code = "invalid_config", message = "settings source must be a non-empty short string" }
++  end
++  local normalized, err = validate_config(config)
++  if not normalized then return nil, err end
++  local layers = copy(self.layers)
++  local prior = layers[source] and layers[source].values or {}
++  local values = options.replace_source and copy(normalized) or merge_update(prior, normalized)
++  self.next_layer_order = self.next_layer_order + 1
++  layers[source] = { values = values, order = self.next_layer_order }
++  local candidate, sources = compose_layers(layers)
++  self.layers, self.user, self.sources = layers, candidate, sources
++  return true
++end
++
++function Settings:config_snapshot()
++  return {
++    values = copy(self.user),
++    sources = copy(self.sources),
++    layers = copy(self.layers),
++    next_layer_order = self.next_layer_order,
++  }
++end
++
++function Settings:restore_config(snapshot)
++  if self.disposed then return nil, { code = "settings_disposed", message = "settings service has been disposed" } end
++  if type(snapshot) ~= "table" or type(snapshot.values) ~= "table" or type(snapshot.sources) ~= "table"
++    or type(snapshot.layers) ~= "table" or type(snapshot.next_layer_order) ~= "number" then
++    return nil, { code = "invalid_snapshot", message = "settings snapshot is invalid" }
++  end
++  local normalized, err = validate_config(snapshot.values)
++  if not normalized then return nil, err end
++  local sources = {}
++  for path, source in pairs(snapshot.sources) do
++    if not fields[path] or type(source) ~= "string" or source == "" or #source > 64 then
++      return nil, { code = "invalid_snapshot", message = "settings snapshot contains invalid provenance" }
++    end
++    sources[path] = source
++  end
++  if snapshot.next_layer_order % 1 ~= 0 or snapshot.next_layer_order < 0 then
++    return nil, { code = "invalid_snapshot", message = "settings snapshot layer order is invalid" }
++  end
++  local layers = {}
++  for source, layer in pairs(snapshot.layers) do
++    if type(source) ~= "string" or source == "" or #source > 64 or type(layer) ~= "table"
++      or type(layer.order) ~= "number" or layer.order % 1 ~= 0 or layer.order < 1
++      or layer.order > snapshot.next_layer_order or type(layer.values) ~= "table" then
++      return nil, { code = "invalid_snapshot", message = "settings snapshot contains an invalid source layer" }
++    end
++    local layer_values, layer_error = validate_config(layer.values)
++    if not layer_values then return nil, { code = "invalid_snapshot", message = layer_error.message } end
++    layers[source] = { values = layer_values, order = layer.order }
++  end
++  local composed_values, composed_sources = compose_layers(layers)
++  if not vim.deep_equal(composed_values, normalized) or not vim.deep_equal(composed_sources, sources) then
++    return nil, { code = "invalid_snapshot", message = "settings snapshot layers do not match its effective values" }
++  end
++  self.layers, self.user, self.sources = layers, normalized, sources
++  self.next_layer_order = snapshot.next_layer_order
++  return true
++end
++
++function Settings:get(path, context)
++  local field = fields[path]
++  if not field then return nil, { code = "unknown_setting", message = "unknown setting: " .. tostring(path) } end
++  context = context or {}
++  if type(context) ~= "table" then return nil, { code = "invalid_context", message = "settings context must be a table" } end
++  local base = copy(defaults)
++  local user_value = read_path(self.user, path)
++  local value, source
++  if user_value == nil then
++    value, source = read_path(base, path), "default"
++  else
++    value, source = copy(user_value), self.sources[path] or "setup"
++  end
++  local selected_scope
++
++  if field.overridable ~= false then
++    for _, scope in ipairs({ "workspace", "session", "buffer" }) do
++      local context_key = scope_context[scope]
++      local id = owner_id(scope, context[context_key])
++      local record = id and self.overrides[scope][id] and self.overrides[scope][id][path]
++      if record and record.active then
++        value = copy(record.value)
++        source = scope .. ":" .. id
++        selected_scope = scope
++      end
++    end
++  end
++
++  return {
++    path = path,
++    requested = copy(value),
++    effective = copy(value),
++    value = copy(value),
++    provenance = source,
++    scope = selected_scope or field.scope,
++    apply_mode = "live",
++    restart_required = false,
++    overrideable = field.overridable ~= false,
++  }
++end
++
++function Settings:list(context)
++  local paths = {}
++  for path in pairs(fields) do paths[#paths + 1] = path end
++  table.sort(paths)
++  local result = {}
++  for _, path in ipairs(paths) do
++    local state = self:get(path, context)
++    result[#result + 1] = state
++  end
++  return result
++end
++
++function Settings:set_override(scope, id, path, value)
++  if self.disposed then return nil, { code = "settings_disposed", message = "settings service has been disposed" } end
++  if not override_scopes[scope] then return nil, { code = "invalid_scope", message = "override scope must be workspace, session, or buffer" } end
++  local key = owner_id(scope, id)
++  if not key then return nil, { code = "invalid_owner", message = "override owner is invalid for scope " .. scope } end
++  local field = fields[path]
++  if not field then return nil, { code = "unknown_setting", message = "unknown setting: " .. tostring(path) } end
++  if field.overridable == false then return nil, { code = "not_overridable", message = "setting cannot be overridden: " .. path } end
++  if field.override_scopes and not field.override_scopes[scope] then
++    return nil, { code = "override_scope_not_allowed", message = "setting " .. path .. " cannot be overridden at " .. scope .. " scope" }
++  end
++  local normalized, err = validate_leaf(path, value)
++  if normalized == nil then return nil, err end
++  local owner = self.overrides[scope][key]
++  if not owner then owner = {}; self.overrides[scope][key] = owner end
++  self.next_id = self.next_id + 1
++  local record = { id = self.next_id, value = copy(normalized), previous = owner[path], active = true }
++  owner[path] = record
++  local service = self
++  local handle = {}
++  function handle:dispose()
++    if not record.active then return false end
++    record.active = false
++    if owner[path] == record then owner[path] = live_fallback(record) end
++    if owner[path] == nil then service.overrides[scope][key] = nil end
++    return true
++  end
++  function handle:is_active() return record.active end
++  return handle
++end
++
++function Settings:register_adapter(id, adapter, options)
++  if self.disposed then return nil, { code = "settings_disposed", message = "settings service has been disposed" } end
++  if options == nil then options = {} end
++  if type(options) ~= "table" then return nil, { code = "invalid_adapter", message = "setting adapter options must be a table" } end
++  if not adapter_ids[id] then return nil, { code = "unknown_adapter", message = "unsupported editor setting adapter: " .. tostring(id) } end
++  if type(adapter) ~= "table" or type(adapter.get) ~= "function" or type(adapter.set) ~= "function"
++    or type(adapter.capabilities) ~= "function" or not adapter_scopes[adapter.scope] then
++    return nil, { code = "invalid_adapter", message = "setting adapter requires get, set, capabilities and a supported scope" }
++  end
++  for key in pairs(options) do
++    if key ~= "replace" and key ~= "scope" then
++      return nil, { code = "invalid_adapter", message = "unknown setting adapter option: " .. tostring(key) }
++    end
++  end
++  if options.replace ~= nil and type(options.replace) ~= "boolean" then
++    return nil, { code = "invalid_adapter", message = "replace must be boolean" }
++  end
++  local previous = self.adapters[id]
++  if previous and options.replace ~= true then
++    return nil, { code = "duplicate_adapter", message = "setting adapter is already registered: " .. id }
++  end
++  self.next_id = self.next_id + 1
++  local record = { id = self.next_id, adapter = adapter, previous = previous, active = true }
++  self.adapters[id] = record
++  local service = self
++  local owner_handle, owner_error
++  local handle = {}
++  function handle:dispose()
++    if not record.active then return false end
++    record.active = false
++    if service.adapters[id] == record then service.adapters[id] = live_fallback(record) end
++    if owner_handle then owner_handle:forget(); owner_handle = nil end
++    return true
++  end
++  function handle:is_active() return record.active end
++  if options.scope ~= nil then
++    if type(options.scope) ~= "table" or type(options.scope.defer) ~= "function" then
++      handle:dispose()
++      return nil, { code = "invalid_scope", message = "setting adapter owner must be a disposable scope" }
++    end
++    owner_handle, owner_error = options.scope:defer(function() handle:dispose() end, "setting-adapter:" .. id, "setting-adapter")
++    if not owner_handle then
++      handle:dispose()
++      return nil, owner_error or { code = "scope_disposed", message = "adapter owner scope is disposed" }
++    end
++  end
++  return handle
++end
++
++local function normalize_adapter_state(id, record, context)
++  if not record or not record.active then
++    return { id = id, available = false, state = "unavailable", reason = "no autoconf editor-setting adapter is registered" }
++  end
++  local adapter = record.adapter
++  local ok_capability, capability = pcall(adapter.capabilities, context or {})
++  if not ok_capability or type(capability) ~= "table" or type(capability.available) ~= "boolean" then
++    return { id = id, available = false, state = "error", reason = "setting adapter returned an invalid capability state" }
++  end
++  local ok_state, current = pcall(adapter.get, context or {})
++  if not ok_state or type(current) ~= "table" or type(current.requested) ~= "boolean" or type(current.effective) ~= "boolean" then
++    return { id = id, available = false, state = "error", reason = "setting adapter returned no boolean requested/effective state" }
++  end
++  local result = {
++    id = id,
++    available = capability.available,
++    state = type(capability.state) == "string" and capability.state or (capability.available and "ready" or "unavailable"),
++    requested = current.requested,
++    effective = current.effective,
++    provenance = type(current.provenance) == "string" and current.provenance or "autoconf",
++    restart_required = current.restart_required == true,
++    scope = adapter.scope,
++  }
++  if type(capability.reason) == "string" then result.reason = capability.reason
++  elseif type(current.reason) == "string" then result.reason = current.reason end
++  if type(current.runtime_state) == "string" then result.runtime_state = current.runtime_state end
++  return result
++end
++
++function Settings:adapter_state(id, context)
++  if context ~= nil and type(context) ~= "table" then return nil, { code = "invalid_context", message = "settings context must be a table" } end
++  if not adapter_ids[id] then return nil, { code = "unknown_adapter", message = "unsupported editor setting adapter: " .. tostring(id) } end
++  return normalize_adapter_state(id, self.adapters[id], context)
++end
++
++function Settings:set_adapter(id, value, context)
++  if type(value) ~= "boolean" then return nil, { code = "invalid_setting", message = "editor setting value must be boolean" } end
++  if context ~= nil and type(context) ~= "table" then return nil, { code = "invalid_context", message = "settings context must be a table" } end
++  local record = self.adapters[id]
++  local before = normalize_adapter_state(id, record, context)
++  if not before.available then return nil, { code = "adapter_unavailable", message = before.reason or "setting adapter is unavailable" } end
++  local adapter = record.adapter
++  local context_key = scope_context[adapter.scope]
++  if context_key and not owner_id(adapter.scope, (context or {})[context_key]) then
++    return nil, { code = "missing_scope", message = "setting adapter requires " .. context_key }
++  end
++  local ok_set, accepted, set_error = pcall(adapter.set, value, context or {})
++  if not ok_set or accepted ~= true then
++    local rollback_ok, rollback_accepted = pcall(adapter.set, before.requested, context or {})
++    local failure_code = type(set_error) == "table" and set_error.code or "adapter_set_failed"
++    local failure_message = type(set_error) == "table" and set_error.message
++      or tostring(not ok_set and accepted or set_error or "setting adapter rejected the value")
++    return nil, {
++      code = failure_code,
++      message = failure_message,
++      rollback = rollback_ok and rollback_accepted == true,
++    }
++  end
++  local after = normalize_adapter_state(id, record, context)
++  if not after.available or after.requested ~= value or after.effective ~= value then
++    local rollback_ok, rollback_accepted = pcall(adapter.set, before.requested, context or {})
++    return nil, {
++      code = "adapter_state_mismatch",
++      message = "setting adapter did not report the applied value as requested and effective",
++      rollback = rollback_ok and rollback_accepted == true,
++    }
++  end
++  return after
++end
++
++function Settings:adapter_snapshot()
++  local result = {}
++  for id in pairs(adapter_ids) do result[id] = self:adapter_state(id) end
++  return result
++end
++
++function Settings:save()
++  return nil, {
++    code = "read_only_config",
++    message = "no writable workbench TOML target was supplied; live settings were not persisted",
++  }
++end
++
++function Settings:dispose()
++  if self.disposed then return false end
++  self.disposed = true
++  for _, record in pairs(self.adapters) do
++    while record do record.active = false; record = record.previous end
++  end
++  for _, scopes in pairs(self.overrides) do
++    for _, owner in pairs(scopes) do
++      for _, record in pairs(owner) do
++        while record do record.active = false; record = record.previous end
++      end
++    end
++  end
++  self.adapters = {}
++  self.overrides = { workspace = {}, session = {}, buffer = {} }
++  return true
++end
++
++return M
+--- a/tests/runtime/test_core_actions.lua
++++ b/tests/runtime/test_core_actions.lua
+@@ -325,6 +325,7 @@
+       local after_failure = App:get_status()
+       b:dispose()
+       local final = App:get_status()
++      App:dispose()
+       return {
+         duplicate = duplicate,
+         duplicate_error = duplicate_error,
+@@ -339,13 +340,15 @@
+         final = final,
+         cleanups = cleanups,
+         b_active = b:is_active(),
++        resources_after_dispose = App.scope:inventory(),
++        actions_after_dispose = App.actions:inventory(),
+       }
+     ]])
+     expect.equality(result.duplicate, nil)
+     expect.equality(result.duplicate_error.code, "duplicate_capability")
+     expect.equality(result.before.state, "enabled")
+     expect.equality(#result.before.capabilities, 2)
+-    expect.equality(result.before.resources.resource_count, 2)
++    expect.equality(result.before.resources.resource_count, 3)
+     expect.equality(result.result_a, "a")
+     expect.equality(result.result_b, "b")
+     expect.equality(#result.after_a.capabilities, 1)
+@@ -354,12 +357,19 @@
+     expect.equality(result.failed, nil)
+     expect.equality(result.failed_error.code, "capability_install_failed")
+     expect.equality(#result.after_failure.capabilities, 1)
+-    expect.equality(result.after_failure.actions[1].id, "synthetic.b")
+-    expect.equality(result.final.resources.resource_count, 0)
+-    expect.equality(#result.final.actions, 0)
++    expect.equality(#result.after_failure.actions, 4)
++    expect.equality(result.after_failure.actions[4].id, "synthetic.b")
++    expect.equality(result.final.resources.resource_count, 1)
++    expect.equality(#result.final.actions, 3)
++    expect.equality(result.final.actions[1].id, "settings.toggle_completion")
++    expect.equality(result.final.actions[2].id, "settings.toggle_diagnostics")
++    expect.equality(result.final.actions[3].id, "settings.toggle_formatting")
++    expect.equality(result.resources_after_dispose.resource_count, 0)
++    expect.equality(#result.actions_after_dispose, 0)
+     expect.equality(result.cleanups.a, 1)
+     expect.equality(result.cleanups.b, 1)
+     expect.equality(result.b_active, false)
++    expect.equality(result.final.resources.resources[1].label, "child:settings-controller")
+   end,
+ 
+   ["three capability disable and re-enable cycles leave one hook and preserve a sibling"] = function()
+@@ -425,6 +435,10 @@
+         sibling_hooks = sibling_hooks,
+         final_hooks = final_hooks,
+         resources = App.scope:inventory(),
++        actions_before_dispose = App.actions:inventory(),
++        disposed = App:dispose(),
++        resources_after_dispose = App.scope:inventory(),
++        actions_after_dispose = App.actions:inventory(),
+       }
+     ]])
+     expect.equality(result.cycles, 3)
+@@ -435,7 +449,11 @@
+     expect.equality(result.sibling_action.ok, true)
+     expect.equality(result.sibling_hooks, 1)
+     expect.equality(result.final_hooks, 0)
+-    expect.equality(result.resources.resource_count, 0)
++    expect.equality(result.resources.resource_count, 1)
++    expect.equality(result.resources.resources[1].label, "child:settings-controller")
++    expect.equality(#result.actions_before_dispose, 3)
++    expect.equality(result.resources_after_dispose.resource_count, 0)
++    expect.equality(#result.actions_after_dispose, 0)
+   end,
+ 
+   ["public command stays dormant and setup false is distinct from absent"] = function()
+@@ -492,7 +510,7 @@
+     expect.equality(result.after_command.state, "disabled")
+     expect.equality(result.still_lazy, true)
+     expect.equality(result.invalid, nil)
+-    expect.equality(result.invalid_error.code, "unknown_config")
++    expect.equality(result.invalid_error.code, "invalid_config")
+     expect.equality(result.after_invalid.state, "disabled")
+     expect.equality(result.configured.state, "disabled")
+     expect.equality(result.disabled.error.code, "disabled")
+@@ -526,12 +544,18 @@
+         capabilities = #App:get_status().capabilities,
+         actions = App.actions:inventory(),
+         failures = failures,
++        disposed = App:dispose(),
++        scope_after_dispose = App.scope:inventory(),
++        actions_after_dispose = App.actions:inventory(),
+       }
+     ]])
+-    expect.equality(result.scope.resource_count, 0)
++    expect.equality(result.scope.resource_count, 1)
++    expect.equality(result.scope.resources[1].label, "child:settings-controller")
+     expect.equality(result.scope.pending_callbacks, 0)
+     expect.equality(result.capabilities, 0)
+-    expect.equality(#result.actions, 0)
++    expect.equality(#result.actions, 3)
++    expect.equality(result.scope_after_dispose.resource_count, 0)
++    expect.equality(#result.actions_after_dispose, 0)
+     expect.equality(result.failures, 0)
+   end,
+ })
+--- /dev/null
++++ b/tests/runtime/test_settings.lua
+@@ -0,0 +1,229 @@
++local MiniTest = require("mini.test")
++local expect = MiniTest.expect
++local child
++local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
++
++local function evaluate(source, ...)
++  local wrapped = "local args={...}; local unpack_fn=unpack or table.unpack; local ok,result=xpcall(function(...)\n" .. source .. "\nend,debug.traceback,unpack_fn(args)); if not ok then return {__child_error=result} end; return result"
++  local result = child.lua(wrapped, { ... })
++  if type(result) == "table" and result.__child_error then error("settings child evaluation failed: " .. vim.inspect(result.__child_error), 2) end
++  return result
++end
++
++return MiniTest.new_set({
++  hooks = {
++    pre_case = function()
++      child = MiniTest.new_child_neovim()
++      child.start({}, { nvim_executable = assert(vim.env.NVIM_TEST_BINARY) })
++      child.lua("vim.opt.runtimepath:prepend(...)", { root })
++    end,
++    post_case = function()
++      if child then pcall(child.stop); child = nil end
++    end,
++  },
++}, {
++  ["settings schema preserves false, replaces arrays and rejects unknown or out-of-range values atomically"] = function()
++    local result = evaluate([[
++      local settings = require('workbench.services.settings').new()
++      local defaults = settings:get('enabled')
++      local configured = assert(settings:configure({
++        enabled=true,
++        sidebar={views={'files'},['follow_active_file']=false},
++        search={hidden=false,ignored=true,['debounce_ms']=0},
++      }, {source='autoconf.toml'}))
++      local before = settings:config_snapshot()
++      local unknown, unknown_error = settings:configure({search={mystery=true}})
++      local range, range_error = settings:configure({enabled=false,search={debounce_ms=301}})
++      local enabled = settings:get('enabled')
++      local hidden = settings:get('search.hidden')
++      local ignored = settings:get('search.ignored')
++      local delay = settings:get('search.debounce_ms')
++      local views = settings:get('sidebar.views')
++      local after = settings:config_snapshot()
++      return {
++        configured=configured, defaults=defaults, unknown=unknown, unknown_error=unknown_error,
++        range=range, range_error=range_error, enabled=enabled, hidden=hidden, ignored=ignored,
++        delay=delay, views=views, unchanged=vim.deep_equal(before,after),
++      }
++    ]])
++    expect.equality(result.configured, true)
++    expect.equality(result.defaults.effective, false)
++    expect.equality(result.enabled.effective, true)
++    expect.equality(result.enabled.provenance, "autoconf.toml")
++    expect.equality(result.hidden.effective, false)
++    expect.equality(result.hidden.provenance, "autoconf.toml")
++    expect.equality(result.ignored.effective, true)
++    expect.equality(result.delay.effective, 0)
++    expect.equality(result.views.effective, { "files" })
++    expect.equality(result.unknown, nil)
++    expect.equality(result.unknown_error.path, "search.mystery")
++    expect.equality(result.range, nil)
++    expect.equality(result.range_error.path, "search.debounce_ms")
++    expect.equality(result.unchanged, true)
++  end,
++
++  ["replacing a provenance source restores omitted fields and snapshots restore all source layers"] = function()
++    local result = evaluate([[
++      local settings = require('workbench.services.settings').new()
++      assert(settings:configure({sidebar={width=44},search={hidden=true}}, {source='setup'}))
++      assert(settings:configure({search={hidden=false},preview={enabled=false}}, {source='autoconf.toml',replace_source=true}))
++      local prior = settings:config_snapshot()
++      assert(settings:configure({enabled=true}, {source='autoconf.toml',replace_source=true}))
++      local fallback = settings:get('search.hidden')
++      local preview = settings:get('preview.enabled')
++      local width = settings:get('sidebar.width')
++      local restored = settings:restore_config(prior)
++      local restored_hidden = settings:get('search.hidden')
++      local restored_preview = settings:get('preview.enabled')
++      local restored_width = settings:get('sidebar.width')
++      settings:dispose()
++      return {fallback=fallback,preview=preview,width=width,restored=restored,
++        restored_hidden=restored_hidden,restored_preview=restored_preview,restored_width=restored_width}
++    ]])
++    expect.equality(result.fallback.effective, true)
++    expect.equality(result.fallback.provenance, "setup")
++    expect.equality(result.preview.effective, true)
++    expect.equality(result.preview.provenance, "default")
++    expect.equality(result.width.effective, 44)
++    expect.equality(result.width.provenance, "setup")
++    expect.equality(result.restored, true)
++    expect.equality(result.restored_hidden.effective, false)
++    expect.equality(result.restored_hidden.provenance, "autoconf.toml")
++    expect.equality(result.restored_preview.effective, false)
++    expect.equality(result.restored_preview.provenance, "autoconf.toml")
++    expect.equality(result.restored_width.effective, 44)
++  end,
++
++  ["workspace, session and buffer overrides compose by precedence and dispose back to their predecessor"] = function()
++    local result = evaluate([[
++      local settings = require('workbench.services.settings').new()
++      assert(settings:configure({search={hidden=false,ignored=false}}))
++      local workspace = assert(settings:set_override('workspace','ws-1','search.hidden',true))
++      local session = assert(settings:set_override('session','view-1','search.hidden',false))
++      local buffer = assert(settings:set_override('buffer',17,'search.hidden',true))
++      local context = {workspace_id='ws-1',session_id='view-1',bufnr=17}
++      local top = settings:get('search.hidden',context)
++      buffer:dispose()
++      local middle = settings:get('search.hidden',context)
++      workspace:dispose()
++      session:dispose()
++      local fallback = settings:get('search.hidden',context)
++      local invalid, invalid_error = settings:set_override('global','user','search.hidden',true)
++      local enabled, enabled_error = settings:set_override('buffer',17,'enabled',true)
++      local invalid_position, invalid_position_error = settings:set_override('buffer',17,'sidebar.position','right')
++      local second_dispose = session:dispose()
++      return {top=top,middle=middle,fallback=fallback,invalid=invalid,invalid_error=invalid_error,
++        enabled=enabled,enabled_error=enabled_error,invalid_position=invalid_position,
++        invalid_position_error=invalid_position_error,second_dispose=second_dispose}
++    ]])
++    expect.equality(result.top.effective, true)
++    expect.equality(result.top.provenance, "buffer:17")
++    expect.equality(result.middle.effective, false)
++    expect.equality(result.middle.provenance, "session:view-1")
++    expect.equality(result.fallback.effective, false)
++    expect.equality(result.fallback.provenance, "setup")
++    expect.equality(result.invalid, nil)
++    expect.equality(result.invalid_error.code, "invalid_scope")
++    expect.equality(result.enabled, nil)
++    expect.equality(result.enabled_error.code, "not_overridable")
++    expect.equality(result.invalid_position, nil)
++    expect.equality(result.invalid_position_error.code, "override_scope_not_allowed")
++    expect.equality(result.second_dispose, false)
++  end,
++
++  ["standalone actions disclose absent host adapters and adapter failure rolls back without touching siblings"] = function()
++    local result = evaluate([[
++      local app = assert(require('workbench.compose').new())
++      local status = app:get_status()
++      local available = {}
++      for _, action in ipairs(status.actions) do
++        if action.id:match('^settings%.toggle_') then available[action.id] = action.available end
++      end
++      assert(app:configure({enabled=true}))
++      local values = {completion=true,formatting=false,diagnostics=false}
++      local function adapter(id, setter)
++        return {
++          scope='global',
++          capabilities=function() return {available=true,state='ready'} end,
++          get=function() return {requested=values[id],effective=values[id],provenance='test-host'} end,
++          set=setter or function(value) values[id]=value; return true end,
++        }
++      end
++      local completion = assert(app:register_setting_adapter('completion',adapter('completion')))
++      local broken = assert(app:register_setting_adapter('formatting',adapter('formatting',function(value)
++        if value then values.formatting=true; return false,{code='test_veto',message='format adapter vetoed'} end
++        values.formatting=false; return true
++      end)))
++      assert(app:register_setting_adapter('diagnostics',adapter('diagnostics')))
++      local before = app:get_status().editor_settings
++      local failure = app:execute('settings.toggle_formatting',{}, {enabled=true})
++      local untouched = app:execute('settings.toggle_diagnostics',{}, {enabled=true})
++      local toggled = app:execute('settings.toggle_completion',{}, {})
++      local after = app:get_status().editor_settings
++      local duplicate, duplicate_error = app:register_setting_adapter('completion',adapter('completion'))
++      local report = app:dispose()
++      return {available=available,before=before,failure=failure,untouched=untouched,toggled=toggled,after=after,
++        duplicate=duplicate,duplicate_error=duplicate_error,completion_active=completion:is_active(),broken_active=broken:is_active(),
++        cleanup=report}
++    ]])
++    expect.equality(result.available["settings.toggle_completion"].enabled, false)
++    expect.equality(result.available["settings.toggle_completion"].reason, "no autoconf editor-setting adapter is registered")
++    expect.equality(result.before.completion.available, true)
++    expect.equality(result.failure.ok, false)
++    expect.equality(result.failure.error.code, "test_veto")
++    expect.equality(result.failure.error.message, "format adapter vetoed")
++    expect.equality(result.untouched.value.effective, true)
++    expect.equality(result.toggled.value.effective, false)
++    expect.equality(result.after.formatting.effective, false)
++    expect.equality(result.after.diagnostics.effective, true)
++    expect.equality(result.after.completion.effective, false)
++    expect.equality(result.duplicate, nil)
++    expect.equality(result.duplicate_error.code, "duplicate_adapter")
++    expect.equality(result.completion_active, false)
++    expect.equality(result.broken_active, false)
++    expect.equality(result.cleanup.ok, true)
++  end,
++
++  ["failed app configuration preserves enabled state and settings save refuses to write an unknown target"] = function()
++    local result = evaluate([[
++      local app = assert(require('workbench.compose').new())
++      assert(app:configure({enabled=true,search={debounce_ms=0}}))
++      local before = app:get_status()
++      local before_search_delay = app.settings:get('search.debounce_ms').effective
++      local changed, err = app:configure({enabled=false,search={debounce_ms=301}})
++      local after = app:get_status()
++      local settings = require('workbench.services.settings').new()
++      local saved, save_error = settings:save()
++      settings:dispose()
++      local after_search_delay = app.settings:get('search.debounce_ms').effective
++      app:dispose()
++      return {changed=changed,error=err,before_state=before.state,after_state=after.state,
++        before_search_delay=before_search_delay,after_search_delay=after_search_delay,
++        saved=saved,save_error=save_error}
++    ]])
++    expect.equality(result.changed, nil)
++    expect.equality(result.error.path, "search.debounce_ms")
++    expect.equality(result.before_state, "enabled")
++    expect.equality(result.after_state, "enabled")
++    expect.equality(result.before_search_delay, 0)
++    expect.equality(result.after_search_delay, 0)
++    expect.equality(result.saved, nil)
++    expect.equality(result.save_error.code, "read_only_config")
++    expect.equality(result.save_error.message:find("no writable workbench TOML target", 1, true) ~= nil, true)
++  end,
++
++  ["invalid public setup does not create or enable the singleton application"] = function()
++    local result = evaluate([[
++      local workbench = require('workbench')
++      local before = workbench.get_status()
++      local configured, err = workbench.setup({enabled=true,search={max_results=10001}})
++      local after = workbench.get_status()
++      return {before=before,configured=configured,error=err,after=after}
++    ]])
++    expect.equality(result.before.reason, "not_setup")
++    expect.equality(result.configured, nil)
++    expect.equality(result.error.path, "search.max_results")
++    expect.equality(result.after.reason, "not_setup")
++    expect.equality(result.after.state, "disabled")
++  end,
++})
+--- /dev/null
++++ b/tests/e2e/wb19_settings.py
+@@ -0,0 +1,127 @@
++#!/usr/bin/env python3
++"""Exercise registered settings actions through the real palette UI."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import secrets
++import sys
++import time
++import traceback
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT))
++from tests.e2e.driver import parse_grids  # noqa: E402
++from tests.e2e.wb10_search import Run  # noqa: E402
++
++
++class SettingsRun(Run):
++    def _start(self):
++        super()._start()
++        self.lua(
++            "local Scope=require('workbench.core.scope'); "
++            "_G.wb19_settings=assert(require('workbench.services.settings').new()); "
++            "assert(_G.wb19_settings:configure({enabled=true})); "
++            "_G.wb19_scope=Scope.new('wb19-ui-settings'); "
++            "_G.wb19_controller=assert(require('workbench.controllers.settings').new({"
++            "settings=_G.wb19_settings,actions=_G.wb10_actions,scope=_G.wb19_scope})); "
++            "_G.wb19_values={completion=false,formatting=false,diagnostics=false}; "
++            "_G.wb19_attach_adapters=function() _G.wb19_handles={}; "
++            "for _,id in ipairs({'completion','formatting','diagnostics'}) do "
++            "local adapter={scope='global',capabilities=function() return {available=true,state='ready'} end,"
++            "get=function() local v=_G.wb19_values[id]; return {requested=v,effective=v,provenance='e2e-host'} end,"
++            "set=function(value) _G.wb19_values[id]=value; return true end}; "
++            "_G.wb19_handles[#_G.wb19_handles+1]=assert(_G.wb19_settings:register_adapter(id,adapter,{scope=_G.wb19_scope})) end end; "
++            "return true"
++        )
++
++    def _open_palette_action(self, action_id: str, title: str):
++        self.lua("_G.wb10_controller.palette:open({focus=true})")
++        self.wait_screen("Actions · Enter runs")
++        self.prompt("/", action_id, "Filter actions:")
++        self.wait_screen(title)
++
++    def _exercise(self):
++        assert self.control is not None
++        action_timings = {}
++        self.phase = "standalone-adapter-unavailable"
++        missing = self.lua(
++            "local s=_G.wb19_settings:adapter_state('completion'); "
++            "return {available=s.available,reason=s.reason,focus=vim.api.nvim_get_current_win()}"
++        )
++        if missing["available"] or "no autoconf editor-setting adapter" not in missing["reason"]:
++            raise AssertionError(f"standalone host adapter was not accurately unavailable: {missing}")
++        origin_view = self.lua("return _G.wb10_origin_win")
++        self._open_palette_action("settings.toggle_completion", "Toggle completion")
++        self.input("\r")
++        self.wait_screen("no autoconf editor-setting adapter")
++        self.input("q")
++        self.lua("_G.wb19_attach_adapters()")
++
++        self.phase = "completion-palette-toggle-and-checked-state"
++        self._open_palette_action("settings.toggle_completion", "Toggle completion")
++        started = time.perf_counter_ns()
++        self.input("\r")
++        self.wait_lua("return _G.wb19_values.completion==true", "completion setting changes through action UI")
++        action_timings["completion_ms"] = (time.perf_counter_ns() - started) / 1_000_000
++        self.wait_lua(f"return vim.api.nvim_get_current_win()=={origin_view}", "palette returns focus to the user's editor")
++        self._open_palette_action("settings.toggle_completion", "Toggle completion")
++        self.wait_screen("on")
++        self.input("q")
++
++        self.phase = "formatting-and-diagnostics-palette-toggles"
++        self._open_palette_action("settings.toggle_formatting", "Toggle format on save")
++        started = time.perf_counter_ns()
++        self.input("\r")
++        self.wait_lua("return _G.wb19_values.formatting==true", "formatting setting changes through action UI")
++        action_timings["formatting_ms"] = (time.perf_counter_ns() - started) / 1_000_000
++        self.wait_lua(f"return vim.api.nvim_get_current_win()=={origin_view}", "formatting palette restores focus")
++        self._open_palette_action("settings.toggle_diagnostics", "Toggle inline diagnostics")
++        started = time.perf_counter_ns()
++        self.input("\r")
++        self.wait_lua("return _G.wb19_values.diagnostics==true", "diagnostics setting changes through action UI")
++        action_timings["diagnostics_ms"] = (time.perf_counter_ns() - started) / 1_000_000
++        self.wait_lua(f"return vim.api.nvim_get_current_win()=={origin_view}", "diagnostics palette restores focus")
++
++        final = self.lua(
++            "local values=_G.wb19_values; local state={}; "
++            "for _,id in ipairs({'completion','formatting','diagnostics'}) do state[id]=_G.wb19_settings:adapter_state(id) end; "
++            "return {values=values,state=state,search_views=_G.wb10_controller:status().active_views,"
++            "palette=_G.wb10_controller.palette:status(),resources=_G.wb19_scope:inventory()}"
++        )
++        if not all(final["values"].values()):
++            raise AssertionError(f"one or more external settings did not take effect: {final}")
++        if final["search_views"] != 1 or final["palette"]["active"] != 0:
++            raise AssertionError(f"palette actions disturbed sibling Search ownership or remained mounted: {final}")
++        if max(action_timings.values()) > 150:
++            raise AssertionError(f"a settings action exceeded the 150 ms interaction budget: {action_timings}")
++        self.lua("_G.wb19_controller:dispose(); _G.wb19_scope:dispose(); _G.wb19_settings:dispose()")
++        self.wait_lua("return _G.wb10_controller:status().active_views==1", "settings disposal leaves Search alive")
++        return {"unavailable_reason": missing["reason"], "actions": final["state"],
++                "search_views": final["search_views"], "action_timings": action_timings}
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--nvim", default="nvim")
++    parser.add_argument("--grid-sizes", default="120x35")
++    parser.add_argument("--output-root", type=Path, default=ROOT / ".test-output" / "e2e" / "wb19")
++    args = parser.parse_args()
++    for cols, rows in parse_grids(args.grid_sizes):
++        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
++        output = args.output_root / f"{stamp}-{cols}x{rows}-{secrets.token_hex(3)}"
++        run = SettingsRun(args.nvim, cols, rows, output)
++        try:
++            result = run.run()
++        except Exception as error:
++            print(f"WB-19 settings UI failed at {cols}x{rows}; phase={run.phase}; artifacts: {output}\n"
++                  f"{type(error).__name__}: {error}\n{traceback.format_exc()}", file=sys.stderr)
++            return 1
++        print(json.dumps({"artifacts": str(output), **result}, indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

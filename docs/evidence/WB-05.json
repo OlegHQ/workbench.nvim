@@ -1,0 +1,59 @@
+{
+  "task": "WB-05",
+  "revision": "Workbench base 0534135d877ec3679bb91ee0b4a68b71e174ff7a with the WB-05 core implementation captured in docs/evidence/WB-05-core.diff (SHA-256 5cde0c237db51c59f93e408e6676cdd18b1f9b621cdcff2cd21cbe5de315f3d6). Host nvim-config HEAD 64dceb4df6ac4d3e9b571146101c00947c143b12. No commit or push was performed.",
+  "environment": "macOS 26.4.1 arm64 Macmini9,1; minimum Neovim 0.11.7 and current host Neovim 0.12.4; Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1 and pinned development-only mini.test. Startup/UI measurements used the local 20-pair interleaved host/plugin-free harness with warm caches. Core microbenchmarks used 25 samples of 500 operations per sample, forcing Lua GC before each sample.",
+  "summary": "Implemented named disposable scopes with reverse-order cleanup, bounded error reports, child scopes/resource inventory and stale scheduled-callback invalidation; a typed action registry with namespaced IDs, availability reasons, optional checked state, argument-schema validation, execution errors and explicit replace/restore ownership; and explicit lazy composition with synthetic capability installers and isolated cleanup. The public setup/execute/register_capability/get_status API and status-only :Workbench command do not implicitly enable Workbench. Configuration accepts only enabled; absent enabled preserves the prior effective state. The command callback loads the public API only when invoked, and the public status path before setup does not load composition or providers. View open/close APIs remain unimplemented until their planned dependent tasks; no placeholder view behavior was introduced.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; git diff --check; review the WB-05 module, command and lifecycle changes against docs/CONTRACTS.md and docs/ARCHITECTURE.md.",
+      "result": "Ownership validation passed for all 9 workbench Lua modules with the dynamic-require allowlist reviewed. WB-05 additions are limited to core scope/actions, explicit composition/public API, the cheap plugin command and their tests/benchmarks. Scopes own and idempotently dispose their resources; capability children own registrations and action handles; cleanup failures are bounded and reported while later disposers continue. No generic global bus, eager provider import, external dependency, hosted CI, Nix/host integration or implicit feature enablement was added.",
+      "artifacts": [
+        "docs/evidence/WB-05-core.diff",
+        "tests/check_ownership.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test",
+      "result": "All 26 mini.test cases passed on both Neovim 0.11.7 and 0.12.4 (9 WB-05 scope/action/composition/API cases, 16 WB-04 model cases and the harness probe). Coverage includes reverse disposal, disposer failure continuation, double disposal, late resource immediate disposal and reported error, live resource inventories, callback cancellation/stale delivery, typed availability reasons, argument schema validation, handler/availability errors, duplicate/replaced action ownership, sibling isolation, partial installer failure cleanup, explicit disabled/enabled setup semantics, dormant public command/API loading, and 100 capability create/dispose cycles returning all inventories to zero.",
+      "artifacts": [
+        "tests/runtime/test_core_actions.lua",
+        "tests/runtime/test_workspace_model.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect repeated capability disposal, installer-failure rollback, callback invalidation and 100-cycle inventory assertions in tests/runtime/test_core_actions.lua.",
+      "result": "Resource and action handles are idempotent. A disposed child releases its parent registration; disposing a capability removes only its own action and resources, leaving sibling capabilities effective. Failed capability installation disposes partial registrations and does not publish the capability. Scheduled callbacks canceled directly or invalidated by scope disposal cannot run later, and pending callback inventory returns to zero. One hundred synthetic capability/action register-dispose cycles leave zero app resources, capabilities or actions. A resource registered after scope disposal is disposed immediately and rejected with a structured scope_disposed result.",
+      "artifacts": [
+        "tests/runtime/test_core_actions.lua"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Run .test-deps/neovim-0.11.7/bin/nvim --clean --headless -u NONE -l tests/bench_core_actions.lua and nvim --clean --headless -u NONE -l tests/bench_core_actions.lua; run .test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim.",
+      "result": "Warm core p50/p95 microseconds per operation on Neovim 0.11.7 / 0.12.4: action execution 0.436/0.771 and 0.528/0.649; listing 50 actions 64.929/65.450 and 61.703/62.186; application status with 50 actions 73.254/73.580 and 69.685/70.101; scope create/dispose with 8 resources 4.701/5.252 and 4.790/4.954. On the host, 20 interleaved warm pairs measured startup marker p50/p95 44.212/49.762 ms, wall 64.441/67.740 ms, first UI frame 61.249/66.608 ms and first-input state 1.887/2.035 ms. Relative to WB-04 pre-command baseline (43.037/44.100 ms marker), startup marker median rose 1.175 ms and p95 5.662 ms; both remain within the <150 ms startup target and the +10 ms investigation trigger. The plugin command file's sourcing row was 0.116 ms; host startup profile rows over 5 ms contain no workbench module. No cold-cache claim is made.",
+      "artifacts": [
+        "tests/bench_core_actions.lua",
+        ".bench-output/startup/20260912T143725Z-baseline-b4f234/baseline.json",
+        ".bench-output/startup/20260912T141409Z-baseline-703b0e/baseline.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "Run the actual host configuration: nvim --headless -c 'Workbench status' -c \"lua if vim.fn.exists(':Workbench') ~= 2 or package.loaded['workbench.compose'] ~= nil then vim.cmd('cquit 1') end\" -c 'qa!'; run make test on minimum and host Neovim versions.",
+      "result": "The host command exited successfully and printed 'Workbench: disabled (not_setup)'. The assertion confirmed the command exists and workbench.compose remains unloaded after invocation. The runtime API tests additionally verified status before setup does not load composition/actions/scopes, explicit setup controls enabled state, absent enabled preserves state, disabled execution is rejected, and no provider module is loaded. Both supported Neovim test runs passed all 26 cases.",
+      "artifacts": [
+        "plugin/workbench.lua",
+        "lua/workbench/init.lua",
+        "tests/runtime/test_core_actions.lua"
+      ]
+    }
+  ]
+}

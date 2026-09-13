@@ -58,22 +58,6 @@
       "WB-16",
       "WB-17"
     ],
-    "host-rollout": [
-      "WB-01",
-      "WB-02",
-      "WB-03",
-      "WB-04",
-      "WB-05",
-      "WB-06",
-      "WB-07",
-      "WB-08",
-      "WB-09",
-      "WB-10",
-      "WB-11",
-      "WB-19",
-      "WB-24",
-      "WB-25"
-    ],
     "core": [
       "WB-01",
       "WB-02",
@@ -98,9 +82,7 @@
       "WB-21",
       "WB-22",
       "WB-23",
-      "WB-24",
-      "WB-25",
-      "WB-26"
+      "WB-24"
     ]
   },
   "tasks": [
@@ -127,9 +109,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-01",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-01.json"
+      ],
       "blocker": null
     },
     {
@@ -156,9 +140,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-02",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-02.json"
+      ],
       "blocker": null
     },
     {
@@ -185,9 +171,11 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-03",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-03.json"
+      ],
       "blocker": null
     },
     {
@@ -214,9 +202,11 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-04",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-04.json"
+      ],
       "blocker": null
     },
     {
@@ -244,9 +234,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-05",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-05.json"
+      ],
       "blocker": null
     },
     {
@@ -259,7 +251,8 @@
       "allowed_paths": {
         "workbench": [
           "lua/workbench/ui/",
-          "tests/"
+          "tests/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -274,9 +267,11 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-06",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-06.json"
+      ],
       "blocker": null
     },
     {
@@ -291,7 +286,9 @@
           "lua/workbench/providers/",
           "lua/workbench/controllers/",
           "lua/workbench/ui/",
-          "tests/"
+          "tests/",
+          "Makefile",
+          "docs/PROVIDERS.md"
         ]
       },
       "depends_on": [
@@ -306,9 +303,11 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-07",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-07.json"
+      ],
       "blocker": null
     },
     {
@@ -323,7 +322,11 @@
           "lua/workbench/services/",
           "lua/workbench/ui/",
           "lua/workbench/adapters/",
-          "tests/"
+          "tests/",
+          "Makefile",
+          "docs/tasks.json",
+          "docs/CONTRACTS.md",
+          "docs/evidence/"
         ]
       },
       "depends_on": [
@@ -337,9 +340,11 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-08",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-08.json"
+      ],
       "blocker": null
     },
     {
@@ -369,9 +374,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-09",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-09.json"
+      ],
       "blocker": null
     },
     {
@@ -386,6 +393,8 @@
           "lua/workbench/controllers/",
           "lua/workbench/ui/",
           "lua/workbench/adapters/",
+          "lua/workbench/providers/",
+          "Makefile",
           "tests/"
         ]
       },
@@ -402,9 +411,11 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-10",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-10.json"
+      ],
       "blocker": null
     },
     {
@@ -417,7 +428,8 @@
       "allowed_paths": {
         "workbench": [
           "tests/",
-          "bench/"
+          "bench/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -435,9 +447,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-11",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-11.json"
+      ],
       "blocker": null
     },
     {
@@ -465,9 +479,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-12",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-12.json"
+      ],
       "blocker": null
     },
     {
@@ -481,7 +497,8 @@
         "workbench": [
           "lua/workbench/controllers/",
           "lua/workbench/ui/",
-          "tests/"
+          "tests/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -496,9 +513,11 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-13",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-13.json"
+      ],
       "blocker": null
     },
     {
@@ -512,7 +531,9 @@
         "workbench": [
           "lua/workbench/providers/",
           "lua/workbench/controllers/",
-          "tests/"
+          "lua/workbench/ui/preview.lua",
+          "tests/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -528,9 +549,12 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-14",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "scope_note": "The shared preview renderer must preserve the current window when an asynchronous preview completes; otherwise it can steal focus after the user opens a semantic/search result.",
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-14.json"
+      ],
       "blocker": null
     },
     {
@@ -545,7 +569,8 @@
           "lua/workbench/providers/",
           "lua/workbench/controllers/",
           "lua/workbench/ui/",
-          "tests/"
+          "tests/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -560,9 +585,12 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-15",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "scope_note": "Add the WB-15 RPC-grid acceptance driver to the existing local E2E command so lazy expansion, direction switching, real provider output and navigation return are exercised through actual Neovim input.",
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-15.json"
+      ],
       "blocker": null
     },
     {
@@ -576,7 +604,8 @@
         "workbench": [
           "lua/workbench/providers/",
           "lua/workbench/controllers/",
-          "tests/"
+          "tests/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -591,9 +620,12 @@
         "G4"
       ],
       "spec": "docs/PLAN.md#wb-16",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "scope_note": "Add a native DiagnosticChanged lease provider shared by Problems and Files badges; wire the local RPC-grid Problems walkthrough into the existing E2E command.",
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-16.json"
+      ],
       "blocker": null
     },
     {
@@ -625,9 +657,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-17",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-17.json"
+      ],
       "blocker": null
     },
     {
@@ -658,9 +692,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-18",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-18.json"
+      ],
       "blocker": null
     },
     {
@@ -674,7 +710,8 @@
       "allowed_paths": {
         "workbench": [
           "lua/workbench/",
-          "tests/"
+          "tests/",
+          "Makefile"
         ],
         "autoconf": [
           "lua/autoconf/sys/",
@@ -695,9 +732,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-19",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-19.json"
+      ],
       "blocker": null
     },
     {
@@ -711,7 +750,10 @@
         "workbench": [
           "lua/workbench/providers/",
           "lua/workbench/controllers/",
-          "tests/"
+          "lua/workbench/ui/view.lua",
+          "tests/",
+          "docs/evidence/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -727,9 +769,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-20",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-20.json"
+      ],
       "blocker": null
     },
     {
@@ -744,7 +788,9 @@
           "lua/workbench/services/",
           "lua/workbench/providers/",
           "lua/workbench/controllers/",
-          "tests/"
+          "tests/",
+          "docs/evidence/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -762,9 +808,11 @@
         "G6"
       ],
       "spec": "docs/PLAN.md#wb-21",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-21.json"
+      ],
       "blocker": null
     },
     {
@@ -780,7 +828,9 @@
           "lua/workbench/providers/",
           "lua/workbench/controllers/",
           "lua/workbench/ui/",
-          "tests/"
+          "tests/",
+          "docs/evidence/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -797,9 +847,11 @@
         "G6"
       ],
       "spec": "docs/PLAN.md#wb-22",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-22.json"
+      ],
       "blocker": null
     },
     {
@@ -812,7 +864,10 @@
       "allowed_paths": {
         "workbench": [
           "lua/workbench/services/",
-          "tests/"
+          "lua/workbench/init.lua",
+          "lua/workbench/compose.lua",
+          "tests/",
+          "Makefile"
         ]
       },
       "depends_on": [
@@ -828,9 +883,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-23",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-23.json"
+      ],
       "blocker": null
     },
     {
@@ -844,7 +901,8 @@
       "allowed_paths": {
         "workbench": [
           "lua/workbench/ui/",
-          "tests/"
+          "tests/",
+          "Makefile"
         ],
         "themekit": [
           "lua/themekit/handlers/",
@@ -865,108 +923,11 @@
         "G5"
       ],
       "spec": "docs/PLAN.md#wb-24",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
-      "blocker": null
-    },
-    {
-      "id": "WB-25",
-      "title": "Runtime packaging and rollout",
-      "owner": "nvim-config",
-      "repositories": [
-        "nvim-config",
-        "workbench",
-        "autoconf",
-        "themekit",
-        "nixos-config"
+      "status": "done",
+      "assignee": "Codex",
+      "evidence": [
+        "docs/evidence/WB-24.json"
       ],
-      "allowed_paths": {
-        "nvim-config": [
-          "config.toml",
-          "init.lua",
-          "flake.nix",
-          "flake.lock",
-          ".gitmodules",
-          "pack/plugins/start/",
-          "README.md"
-        ],
-        "workbench": [
-          "docs/",
-          "README.md"
-        ],
-        "autoconf": [
-          "lua/autoconf/sys/",
-          "tests/"
-        ],
-        "themekit": [
-          "lua/themekit/handlers/",
-          "tests/"
-        ],
-        "nixos-config": [
-          "home/default.nix",
-          "flake.nix",
-          "flake.lock"
-        ]
-      },
-      "depends_on": [
-        "WB-11",
-        "WB-19",
-        "WB-24"
-      ],
-      "gates": [
-        "G0",
-        "G1",
-        "G2",
-        "G3",
-        "G4",
-        "G5",
-        "G7"
-      ],
-      "spec": "docs/PLAN.md#wb-25",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
-      "blocker": null
-    },
-    {
-      "id": "WB-26",
-      "title": "Core release acceptance",
-      "owner": "workbench",
-      "repositories": [
-        "workbench"
-      ],
-      "allowed_paths": {
-        "workbench": [
-          "tests/",
-          "bench/"
-        ]
-      },
-      "depends_on": [
-        "WB-17",
-        "WB-18",
-        "WB-19",
-        "WB-20",
-        "WB-21",
-        "WB-22",
-        "WB-23",
-        "WB-24",
-        "WB-25"
-      ],
-      "gates": [
-        "G0",
-        "G1",
-        "G2",
-        "G3",
-        "G4",
-        "G5",
-        "G6",
-        "G7"
-      ],
-      "spec": "docs/PLAN.md#wb-26",
-      "status": "todo",
-      "assignee": null,
-      "evidence": [],
       "blocker": null
     },
     {
@@ -983,7 +944,30 @@
         ]
       },
       "depends_on": [
-        "WB-26"
+        "WB-01",
+        "WB-02",
+        "WB-03",
+        "WB-04",
+        "WB-05",
+        "WB-06",
+        "WB-07",
+        "WB-08",
+        "WB-09",
+        "WB-10",
+        "WB-11",
+        "WB-12",
+        "WB-13",
+        "WB-14",
+        "WB-15",
+        "WB-16",
+        "WB-17",
+        "WB-18",
+        "WB-19",
+        "WB-20",
+        "WB-21",
+        "WB-22",
+        "WB-23",
+        "WB-24"
       ],
       "gates": [
         "G0",
@@ -1013,7 +997,30 @@
         ]
       },
       "depends_on": [
-        "WB-26"
+        "WB-01",
+        "WB-02",
+        "WB-03",
+        "WB-04",
+        "WB-05",
+        "WB-06",
+        "WB-07",
+        "WB-08",
+        "WB-09",
+        "WB-10",
+        "WB-11",
+        "WB-12",
+        "WB-13",
+        "WB-14",
+        "WB-15",
+        "WB-16",
+        "WB-17",
+        "WB-18",
+        "WB-19",
+        "WB-20",
+        "WB-21",
+        "WB-22",
+        "WB-23",
+        "WB-24"
       ],
       "gates": [
         "G0",
@@ -1043,7 +1050,30 @@
         ]
       },
       "depends_on": [
-        "WB-26"
+        "WB-01",
+        "WB-02",
+        "WB-03",
+        "WB-04",
+        "WB-05",
+        "WB-06",
+        "WB-07",
+        "WB-08",
+        "WB-09",
+        "WB-10",
+        "WB-11",
+        "WB-12",
+        "WB-13",
+        "WB-14",
+        "WB-15",
+        "WB-16",
+        "WB-17",
+        "WB-18",
+        "WB-19",
+        "WB-20",
+        "WB-21",
+        "WB-22",
+        "WB-23",
+        "WB-24"
       ],
       "gates": [
         "G0",
@@ -1072,7 +1102,30 @@
         ]
       },
       "depends_on": [
-        "WB-26"
+        "WB-01",
+        "WB-02",
+        "WB-03",
+        "WB-04",
+        "WB-05",
+        "WB-06",
+        "WB-07",
+        "WB-08",
+        "WB-09",
+        "WB-10",
+        "WB-11",
+        "WB-12",
+        "WB-13",
+        "WB-14",
+        "WB-15",
+        "WB-16",
+        "WB-17",
+        "WB-18",
+        "WB-19",
+        "WB-20",
+        "WB-21",
+        "WB-22",
+        "WB-23",
+        "WB-24"
       ],
       "gates": [
         "G0",

@@ -1,0 +1,69 @@
+{
+  "task": "WB-12",
+  "revision": "Workbench base commit 0534135d877ec3679bb91ee0b4a68b71e174ff7a with a dirty tree containing prior authorized WB-01..WB-11 implementation and WB-12 changes in lua/workbench/providers/lsp.lua, tests/, docs/PROVIDERS.md, docs/tasks.json and this evidence. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Pyright 1.1.411 from the configured Python server command; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1. Linux was unavailable locally.",
+  "summary": "Implemented a lazy native-client LSP request provider with per-buffer capability checks, cancellation, independent client timeouts, bounded/sliced result normalization and typed partial failures. Nested DocumentSymbol, flat SymbolInformation/workspace symbols, Location and LocationLink are normalized without merging position encodings. Both minimum/current Neovim runtimes passed the full suite and actual configured Pyright request; fake stdio-server coverage verifies native transport compatibility. Host startup and 2,000-symbol normalization remain within observed performance bounds. Host autoconf/Nix feature wiring remains WB-25 scope.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-12 allowed paths, provider imports and scoped resource inventory",
+      "result": "WB-12 production ownership is confined to lua/workbench/providers/lsp.lua; tests and implicit task/evidence/provider-contract documentation contain validation and documentation changes. The provider depends only on core Scope, Resource and Location and imports no controller or UI. It owns a named augroup containing LspAttach/LspDetach callbacks, one child Scope per request, one cancellation disposer and timeout timer per native request, and scoped scheduled response/normalization callbacks. Attach refreshes only its client's provider snapshot, detach releases only the matching pending requests, and disposal is idempotent. The ownership guard passed for all 23 workbench Lua modules; lifecycle tests end at zero provider/request resources.",
+      "artifacts": [
+        "lua/workbench/providers/lsp.lua",
+        "tests/check_ownership.py",
+        "tests/runtime/test_lsp_provider.lua",
+        "docs/PROVIDERS.md",
+        "docs/tasks.json"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 81 mini.test cases passed on Neovim 0.11.7 and 0.12.4; all 21 Python integration/plan checks passed. Eleven LSP-provider cases cover attached-client and dynamic capability routing, execution-time support changes, nested DocumentSymbol trees, flat SymbolInformation and opaque resolve data, Location/LocationLink, UTF-8 versus UTF-16 columns, source version/client provenance, null versus partial per-client errors, virtual URI rejection with valid sibling output, explicit cancellation, per-client timeout, client detach, source/workspace staleness, late callbacks, and native stdio interop. The host-configured Pyright 1.1.411 test returned normalized `ConfiguredAlpha` document symbols on both Neovim versions.",
+      "artifacts": [
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/fixtures/lsp_server.py",
+        "tests/runtime/minimal_init.lua",
+        "docs/PLAN.md",
+        "docs/PROVIDERS.md"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test",
+      "result": "Controlled detach and user cancellation cancelled native request IDs, closed the request scope and ignored late callbacks. Source changedtick and mutated workspace generation invalidated pending results before any stale batch was accepted. Provider disposal cancelled outstanding work idempotently. A 20 ms slow-client timeout preserved the fast sibling's location as partial output, cancelled the slow client's native request and ignored its deliberately delivered late result. After each terminal path active request counts and provider-owned resources returned to zero.",
+      "artifacts": [
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/fixtures/lsp_server.py",
+        "lua/workbench/providers/lsp.lua"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "python bench/startup.py --runs 20 --nvim /etc/profiles/per-user/snowbear/bin/nvim; run tests/bench_lsp_provider.lua under Neovim 0.11.7 and 0.12.4; inspect package.loaded after host startup",
+      "result": "The 20 interleaved warm host/plugin-free pairs recorded host startup marker p50/p95 44.268/47.960 ms, host UI first-frame 57.202 ms p50 and first-input state 1.844 ms p50. WB-11's comparable startup marker was 44.120/51.356 ms, so this provider-only addition changed the observed marker by +0.148 ms p50 and -3.396 ms p95; it remains below the 150 ms reference threshold. The actual host startup probe reported workbench.providers.lsp was not loaded. In a warm 2,000-item UTF-16 DocumentSymbol normalization fixture (2 warmups, 10 samples), Neovim 0.11.7 end-to-end response was 28.872/29.395 ms p50/p95, first batch 1.125/1.303 ms and maximum synchronous slice 2.180/2.280 ms. Neovim 0.12.4 measured 29.959/31.029 ms, first batch 0.930/2.193 ms and maximum slice 2.779/3.174 ms. Both delivered 32 bounded batches across 16 yielding slices and ended at zero resources after provider disposal. Warm local macOS measurements; no cold-cache or Linux claim.",
+      "artifacts": [
+        "tests/bench_lsp_provider.lua",
+        ".bench-output/startup/20260912T212445Z-baseline-7e129d/baseline.json",
+        "docs/evidence/WB-11.json",
+        "lua/workbench/providers/lsp.lua"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test; make test-integration; make check-ownership; run host-configured Pyright interoperability case",
+      "result": "Minimum/current Neovim 0.11.7 and 0.12.4 compatibility passed in isolated --clean runs. The deterministic Python stdio server exercised Neovim's real native client transport, and the installed/configured Pyright command `pyright-langserver --stdio` completed an actual document-symbol request and normalization on both versions. Missing/unsupported client capability states are covered without starting servers; the real-server test skips with a clear note on machines without Pyright. This WB-12 provider is not yet wired into host actions; autoconf/default mappings, theme and Nix integration belong to WB-25 and were not changed. Linux was unavailable and remains an explicit broader release-platform check.",
+      "artifacts": [
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/fixtures/lsp_server.py",
+        "docs/PROVIDERS.md",
+        "docs/evidence/WB-11.json"
+      ]
+    }
+  ]
+}

@@ -18,6 +18,8 @@ WB-11 must demonstrate this journey through text search. WB-17 extends it throug
 
 Only one sidebar container per tab initially. Switching view mounts its saved session without resetting the other sessions. Results default to a bottom split. Each view can be closed, focused or toggled independently. A global hide action closes workbench surfaces and restores the editor. No startup dashboard.
 
+Within a public sidebar, `]v` and `[v` cycle forward and backward through the current contextual `sidebar.views` order. Switching focuses the destination sidebar and leaves Search open. These buffer-local mappings are owned by the mounted view and removed when it closes.
+
 Use native split windows for persistent UI. Sidebar target width 32 cells, user-adjustable 24-48; reserve at least 60 editor columns and 8 editor rows. Below the minimum, collapse the persistent sidebar into an explicitly opened overlay, or show results without preview. Test 160x50, 120x35, 80x24 and 60x20 terminal grids. Clamp dimensions on resize. Never obscure a prompt or leave an unusably narrow editor.
 
 ## Interaction Rules

@@ -35,7 +35,7 @@ Contract tests run Files and a synthetic second provider through the same contro
 
 All validation runs locally. Do not add GitHub Actions or other hosted CI. Publication does not substitute for local verification, and no remote run URL is required as evidence.
 
-WB-01 provides `make test`, `make test-integration`, `make test-ui`, `make test-e2e`, `make bench` and `make check-ownership`. These are planned commands until WB-01 implements them. A missing command is not a passing gate. Use pinned mini.test in the development environment for child-Neovim control and screenshot assertions; do not add it to runtime dependencies. [mini.test](https://github.com/nvim-mini/mini.test).
+WB-01 provides `make test`, `make test-integration`, `make test-ui`, `make test-e2e`, `make bench` and `make check-ownership`. `make bootstrap` installs pinned development-only mini.test, pynvim/msgpack and Neovim 0.11.7 into ignored `.test-deps/`; none is a workbench runtime dependency. `make test` and `make test-e2e` exercise both the minimum binary and the host binary. The mini.test child helper covers Lua test isolation and screen assertions. The Python driver attaches a real `ext_linegrid` UI to child Neovim over RPC and sends actual key and mouse input. [mini.test](https://github.com/nvim-mini/mini.test).
 
 Tests run isolated from personal configuration and use temporary fixtures. Unit tests exercise pure data transitions. Integration tests run real rg/filesystem/Git processes and a deterministic fake LSP server with encoded positions, partial responses and controllable latency. At least one host integration run uses actual configured language servers and installed optional plugins. Verify test runner exits nonzero on failure.
 
@@ -43,19 +43,21 @@ UI validation uses Neovim's real terminal/RPC grid, not a browser mockup. Captur
 
 ## Local End-To-End Testing
 
-`make test-e2e` launches a fresh local Neovim child for each isolated scenario or explicitly documented scenario group. Use dedicated temporary XDG config/data/state/cache directories, a controlled runtimepath and generated fixture workspace. Attach a real Neovim UI grid through RPC and send actual user commands/key/mouse input. Direct controller calls are useful for lower-level tests but do not satisfy end-to-end acceptance.
+`make test-e2e` launches a fresh local Neovim child for each isolated scenario or explicitly documented scenario group. Use dedicated temporary XDG config/data/state/cache directories, a controlled runtimepath and generated fixture workspace. Attach a real Neovim UI grid through RPC and send actual user commands/key/mouse input. Direct controller calls are useful for lower-level tests but do not satisfy end-to-end acceptance. The initial WB-01 probe verifies the harness itself; it is not evidence of a shipped workbench feature.
 
 Exercise the complete Files -> folder search -> results -> preview -> open -> return -> resume journey, followed by semantic discovery when implemented. Assert rendered rows/highlights, selected resource, current window/buffer, unchanged modified text, search scope and retained state. Use real filesystem/rg/Git processes for their scenarios. Use a deterministic local fake LSP server for race/failure cases and locally installed real servers for semantic integration acceptance; label each run accurately.
 
 Synchronize with observable state using bounded waits, not arbitrary long sleeps. Fail on timeouts, unexpected messages, invalid window writes, orphaned child processes or missing expected artifacts. On failure capture the last UI grid, message log, relevant model/resource snapshot, process exit status and exact reproduction command. Always dispose the child editor and its owned processes, including after failed assertions.
 
-Store run artifacts under `.test-output/e2e/<run-id>/`, with Neovim/dependency versions, fixture seed and tested revisions. Evidence records summarize these local results and link any small reviewed artifacts committed under `docs/evidence/`; large transient logs remain local. Repeat all four terminal grid sizes and relevant keyboard/mouse paths. Test harness failure detection by intentionally violating a focus/render assertion in a temporary fixture before treating it as a gate.
+Store run artifacts under `.test-output/e2e/<run-id>/`, with Neovim/dependency versions, fixture seed and tested revisions. Evidence records summarize these local results and link any small reviewed artifacts committed under `docs/evidence/`; large transient logs remain local. Repeat all four terminal grid sizes and relevant keyboard/mouse paths. Test harness failure detection by intentionally violating a focus/render assertion in a temporary fixture before treating it as a gate. The driver enforces bounded waits and a child-process watchdog, captures the final grid and Neovim state on failure, then reaps the child.
 
-Run platform checks on local hosts or local VMs. If a required platform or real language server is unavailable, record that gate as unverified and finish independent work; do not create a hosted CI job to satisfy it. The current planning-only revision has no runtime E2E suite yet. WB-01 creates the driver, and feature tasks add their scenarios as they become executable.
+Run platform checks on local hosts or local VMs. If a required platform or real language server is unavailable, record that gate as unverified and finish independent work; do not create a hosted CI job to satisfy it. WB-01 creates the reusable driver; feature tasks add and run their user journeys as they become executable. A passing harness probe does not replace feature-specific coverage.
 
 ## Performance Targets
 
 These are initial engineering budgets, not achieved measurements. WB-01 calibrates fixture generation and records hardware/tool versions. Alter a target only with evidence and an ADR explaining the user impact; do not silently increase it to pass a regression.
+
+`make bench` generates all four fixture tiers with seed `20260912`, then runs 20 interleaved host/plugin-free startup pairs. It reports Neovim's startup marker, process wall time, first RPC UI frame and first rendered input separately. The initial fixture probe measures the harness and host, not a workbench feature. Record filesystem cache conditions; do not claim a cold-cache run unless the host supports a controlled cache reset.
 
 | Metric | Initial target | Measurement |
 |---|---|---|
@@ -101,6 +103,6 @@ Revision records the tested code commit(s) or a precise dirty-tree description p
 
 ## Release Gate
 
-Exploration release requires WB-01 through WB-11 and applicable integration gate WB-25 when installed as the host default. Discovery release adds WB-12 through WB-17. Full core workbench adds WB-18 through WB-26. The machine manifest has explicit milestone memberships; a completion check must use those IDs, not infer readiness from task numbering.
+Exploration implementation requires WB-01 through WB-11. Discovery adds WB-12 through WB-17. Full core workbench adds WB-18 through WB-24. WB-25 and WB-26 were removed by user request; publication and host rollout are outside the core implementation milestone. The machine manifest has explicit milestone memberships; a completion check must use those IDs, not infer readiness from task numbering. Retained task gates still require runtime evidence. Any separately requested release follows INTEGRATION and G7; core implementation completion alone does not establish release readiness.
 
 Follow-on tasks are deferred with reasons and do not block the named core release. No unresolved data-loss, stale-callback, focus-loss or unbounded-resource issue can be waived for core release. Known platform limitations are published and reflected in capability states. Default enablement requires actual host walkthroughs, not only standalone tests.

@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "task": "WB-14",
+  "revision": "Workbench base commit 0534135d877ec3679bb91ee0b4a68b71e174ff7a with the authorized dirty WB-01..WB-13 implementation and WB-14 provider, controller, shared preview focus fix, tests, benchmark, Makefile wiring and evidence. The WB-14 acceptance snapshot now captures Search selection after the explicit user-driven next-match action and before semantic navigation. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1; Pyright 1.1.411 via pyright-langserver. Linux was unavailable locally.",
+  "summary": "Implemented workspace-symbol search and originating-client resolution plus references, definitions, type definitions and implementations through the shared action registry, bounded Results store, view layer and Navigation service. Position requests capture per-client encodings and references always send the effective boolean includeDeclaration setting. LSP 3.17 partial workspace-symbol locations remain unresolved until targeted resolve. References deduplicate equivalent locations while retaining client provenance; semantic inspection uses a separate result set and leaves the original Search investigation intact. Outside-root locations use shared Navigation and return correctly. The real Pyright UX-05 journey passed all four local RPC terminal sizes on both supported Neovim versions. No host mappings or startup wiring changed; host rollout remains WB-25.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-14 allowed paths, controller/provider boundaries and scoped resources",
+      "result": "WB-14 production paths are the LSP discovery provider, Symbols and Search controllers, and shared preview UI; tests, benchmark wiring and task evidence are separately scoped. Controllers inject the shared Actions/Results/Navigation services and own per-tab session scopes, query timers, request scopes, result sessions, views and previews. The LSP provider owns each native-client request, cancellation hook, timeout and normalization callback. Closing/disposal cancels owned work and releases views/results; the delayed preview render now preserves the window currently focused by the user. Ownership validation passed for all 26 Lua modules, and no user mapping or root/autoconf/themekit/Nix host wiring was changed.",
+      "artifacts": [
+        "lua/workbench/providers/lsp.lua",
+        "lua/workbench/controllers/symbols.lua",
+        "lua/workbench/controllers/search.lua",
+        "lua/workbench/ui/preview.lua",
+        "tests/runtime/test_symbols_controller.lua",
+        "tests/runtime/test_lsp_provider.lua",
+        "docs/tasks.json"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 95 mini.test cases passed on both Neovim 0.11.7 and 0.12.4; all 21 Python integration and plan checks passed. Controller tests cover registered workspace/resolve/reference/definition/type-definition/implementation actions, explicit false includeDeclaration, multi-client deduplication and provenance, unresolved symbol resolution through the exact originating client with stable item ID, navigation to an outside-root definition, and unchanged retained Search result/session state. Provider tests cover locationless and LSP 3.17 partial-URI unresolved symbols plus client-targeted capability/request dispatch. Unsupported references render a precise unavailable/error state, distinct from a successful empty result.",
+      "artifacts": [
+        "tests/runtime/test_symbols_controller.lua",
+        "tests/runtime/test_lsp_provider.lua",
+        "lua/workbench/controllers/symbols.lua",
+        "lua/workbench/providers/lsp.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; make test-e2e; inspect debounce-generation, close-pending, foreign-hook and delayed-preview focus cases",
+      "result": "Superseded workspace-symbol queries dispose the old debounce timer/request and reject stale result batches; targeted resolve cannot spill over to sibling clients. View/session disposal cancels pending work and preserves an unrelated autocmd. The real RPC-grid walk asserts that a delayed Search preview cannot steal focus after the next result has been opened. All eight WB-14 runs finish with zero active Symbols, LSP, rg, Search and Layout resources.",
+      "artifacts": [
+        "tests/runtime/test_symbols_controller.lua",
+        "tests/e2e/wb14_symbols.py",
+        "lua/workbench/ui/preview.lua",
+        "lua/workbench/controllers/search.lua",
+        "lua/workbench/controllers/symbols.lua",
+        ".test-output/e2e/wb14/20260912T231301Z-160x50-2ca1fb/result.json",
+        ".test-output/e2e/wb14/20260912T231303Z-160x50-78a3e8/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "make test-e2e",
+      "result": "The complete make test-e2e target exited 0. WB-14 ran eight real ext_linegrid UI journeys using ripgrep and Pyright over native Neovim LSP: Neovim 0.11.7 and 0.12.4 at 160x50, 120x35, 80x24 and 60x20. The keyboard path opened a current-file Search match, invoked Find references through Search's shared action palette, rendered Pyright's declaration/call references, opened a reference and returned, returned to the original Search origin, then reopened Search with its query, scope, result count and the selection active at the time semantic navigation began. Pyright returned three references with includeDeclaration=true; teardown left all owned resource counts at zero.",
+      "artifacts": [
+        "tests/e2e/wb14_symbols.py",
+        "Makefile",
+        ".test-output/e2e/wb14/20260912T231301Z-160x50-2ca1fb/result.json",
+        ".test-output/e2e/wb14/20260912T231302Z-120x35-8bd6dd/result.json",
+        ".test-output/e2e/wb14/20260912T231302Z-80x24-0a8c52/result.json",
+        ".test-output/e2e/wb14/20260912T231303Z-60x20-1d627c/result.json",
+        ".test-output/e2e/wb14/20260912T231303Z-160x50-78a3e8/result.json",
+        ".test-output/e2e/wb14/20260912T231304Z-120x35-7c61d4/result.json",
+        ".test-output/e2e/wb14/20260912T231304Z-80x24-aa1795/result.json",
+        ".test-output/e2e/wb14/20260912T231305Z-60x20-9ad1a6/result.json",
+        ".test-output/e2e/wb14/20260912T231304Z-80x24-aa1795/references-grid.json",
+        ".test-output/e2e/wb14/20260912T231304Z-80x24-aa1795/resumed-search-grid.json",
+        ".test-output/e2e/wb14/20260913T073701Z-160x50-e9a60a/result.json",
+        ".test-output/e2e/wb14/20260913T073701Z-120x35-d5d6a5/result.json",
+        ".test-output/e2e/wb14/20260913T073702Z-80x24-4b00a1/result.json",
+        ".test-output/e2e/wb14/20260913T073703Z-60x20-bc4807/result.json",
+        ".test-output/e2e/wb14/20260913T073703Z-160x50-2ef080/result.json",
+        ".test-output/e2e/wb14/20260913T073704Z-120x35-832482/result.json",
+        ".test-output/e2e/wb14/20260913T073704Z-80x24-c9c999/result.json",
+        ".test-output/e2e/wb14/20260913T073705Z-60x20-dfbe5e/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "python bench/startup.py --runs 20 --nvim nvim; run tests/bench_lsp_provider.lua on Neovim 0.11.7 and 0.12.4; inspect package.loaded after host startup",
+      "result": "The 20-pair interleaved warm host/plugin-free profile on the same Macmini9,1 and host revision as WB-12 measured host startup marker p50/p95 45.535/55.846 ms, UI first frame 60.763/72.308 ms and first-input state 1.925/2.227 ms. Versus WB-12's 44.268/47.960 ms startup marker, the observed delta is +1.267/+7.886 ms; startup remains below 150 ms and the p95 change remains below the repository's 10 ms investigation threshold. The >5 ms startup rows are existing themekit/autoconf work; direct host inspection found workbench, its composition, Symbols controller, LSP provider and preview modules absent from package.loaded. In a warm 2,000-item UTF-16 DocumentSymbol comparison (2 warmups, 10 samples), provider response p50/p95 was 29.605/30.465 ms on 0.11.7 and 29.965/31.050 ms on 0.12.4, compared with WB-12's 28.872/29.395 and 29.959/31.029 ms. The new warm 2,000-item unresolved WorkspaceSymbol partial-URI fixture completed at 6.523/6.746 ms p50/p95 on 0.11.7 and 6.410/6.613 ms on 0.12.4; first batch p50/p95 was 0.321/0.364 and 0.268/0.291 ms. Both runtimes emitted 32 bounded batches across 16 yielding slices and ended at zero provider resources after disposal. Local warm macOS measurements only; cold-cache and Linux results were not measured.",
+      "artifacts": [
+        "tests/bench_lsp_provider.lua",
+        "docs/evidence/WB-12.json",
+        ".bench-output/startup/20260912T212445Z-baseline-7e129d/baseline.json",
+        ".bench-output/startup/20260912T231314Z-baseline-a0c5eb/baseline.json",
+        "lua/workbench/providers/lsp.lua",
+        "tests/e2e/wb14_symbols.py"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test; make test-integration; make check-ownership; make test-e2e; start the host init with -i NONE and inspect lazy workbench modules",
+      "result": "Minimum/current compatibility passed in isolated clean Neovim 0.11.7 and 0.12.4 processes. The native provider's fake-server runtime tests and the complete integration suite passed, while actual Pyright 1.1.411 interoperability and UX-05 passed on both runtimes and all four grids. Host startup inspection found all WB-14 modules unloaded; workbench host actions, themes, defaults and Nix wiring remain WB-25 scope, so no host mappings were migrated or replaced here. Pyright was available locally; unsupported-server behavior is independently covered by the missing-capability runtime case. Linux was unavailable and remains a broader release-platform check.",
+      "artifacts": [
+        "tests/runtime/test_symbols_controller.lua",
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/e2e/wb14_symbols.py",
+        "docs/evidence/WB-12.json",
+        "docs/VALIDATION.md"
+      ]
+    }
+  ]
+}

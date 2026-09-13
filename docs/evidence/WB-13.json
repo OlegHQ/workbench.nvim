@@ -1,0 +1,77 @@
+{
+  "task": "WB-13",
+  "revision": "WorkBench base commit 0534135d877ec3679bb91ee0b4a68b71e174ff7a with the authorized dirty WB-01..WB-12 implementation and WB-13 controller, UI, tests, benchmark, Makefile wiring and evidence. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1. Linux was unavailable locally.",
+  "summary": "Implemented Outline as a per-tab view of the last active named real editor buffer. Native document-symbol results reuse WB-12 normalization, are snapshotted once per buffer version/workspace generation, and project as nested or flat symbols with filtering and source/name ordering. Cursor movement highlights the enclosing symbol and refreshes optional breadcrumbs from the same snapshot without stealing manual selection or issuing another LSP request. Buffer edits, buffer switches, LSP attach/detach, view close and controller disposal invalidate/cancel owned work; unrelated autocmds remain untouched. An interval index accelerates laminar symbol ranges, while crossing ranges retain the exact linear fallback. WB-13 is locally complete on both supported Neovim versions; host launcher, theme and Nix wiring remain WB-25 scope.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-13 allowed paths and Outline/View resource ownership",
+      "result": "WB-13 production changes are confined to the outline controller and UI plus the shared View renderer's dynamic-state method; Makefile is admitted for standard e2e/benchmark wiring. The controller owns the per-tab session, one buffer-version request subscription, a bounded snapshot/range-index cache, one visible-buffer observer and one scoped watcher/timer per watched source buffer. The Outline projection owns ordering, filtering, breadcrumb construction and the source-range index. View updates only the currently rendered viewport for cursor changes and retains the existing full projection path for snapshot/filter/order changes. Close, buffer switch and disposal release the corresponding resources; the ownership checker passed for all 25 Lua modules.",
+      "artifacts": [
+        "lua/workbench/controllers/outline.lua",
+        "lua/workbench/ui/outline.lua",
+        "lua/workbench/ui/view.lua",
+        "tests/runtime/test_outline_controller.lua",
+        "tests/check_ownership.py",
+        "docs/tasks.json",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 86 mini.test cases passed under both Neovim 0.11.7 and 0.12.4. All 21 Python integration and plan checks passed. Outline cases verify nested and flat/repeated symbols, source/name ordering, ancestor-preserving filtering, precise unsupported-capability messaging and LspAttach refresh, the same-snapshot breadcrumb path, selection/highlight separation, active row highlights, source edit invalidation, buffer retargeting, request cancellation and foreign-autocmd preservation. Existing WB-12 actual native-client/Pyright coverage also passed on both runtimes.",
+      "artifacts": [
+        "tests/runtime/test_outline_controller.lua",
+        "tests/runtime/test_lsp_provider.lua",
+        "lua/workbench/controllers/outline.lua",
+        "lua/workbench/ui/outline.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect request-generation, buffer-switch and close-pending Outline lifecycle cases",
+      "result": "A source edit cancels the old request, advances the session generation after debounce, rejects the old is_current guard and ignores a deliberately delivered stale batch. Switching the active editor buffer cancels the prior subscription and retargets Outline; focusing the Outline sidebar does not retarget it. Closing while a new request is pending cancels that request and returns request, watcher, observer, session and layout counts to zero. A foreign BufEnter/TextChanged autocmd survives the owned buffer watchers' disposal.",
+      "artifacts": [
+        "tests/runtime/test_outline_controller.lua",
+        "lua/workbench/controllers/outline.lua",
+        "lua/workbench/ui/outline.lua"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "make test-e2e",
+      "result": "The full local e2e target passed, including eight WB-13 real RPC-grid runs: 160x50, 120x35, 80x24 and 60x20 on Neovim 0.11.7 and 0.12.4. The walkthrough rendered nested symbols, exercised keyboard selection and source/name order, filtered while retaining ancestors, changed the editor cursor while preserving manual selection, toggled breadcrumbs, activated a symbol through shared Navigation, and verified zero owned resources plus preservation of a foreign autocmd after close. The grid used controlled normalized provider events; native transport and configured-server behavior are covered by the runtime LSP-provider suite.",
+      "artifacts": [
+        "tests/e2e/wb13_outline.py",
+        "Makefile",
+        ".test-output/e2e/wb13/20260912T221937Z-160x50-0e768c/result.json",
+        ".test-output/e2e/wb13/20260912T221937Z-120x35-375c07/result.json",
+        ".test-output/e2e/wb13/20260912T221937Z-80x24-3d057a/result.json",
+        ".test-output/e2e/wb13/20260912T221937Z-60x20-ef75a1/result.json",
+        ".test-output/e2e/wb13/20260912T221937Z-160x50-6ef97e/result.json",
+        ".test-output/e2e/wb13/20260912T221937Z-120x35-74bc35/result.json",
+        ".test-output/e2e/wb13/20260912T221937Z-80x24-3d057a/result.json",
+        ".test-output/e2e/wb13/20260912T221937Z-60x20-ef75a1/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "python bench/startup.py --runs 20 --nvim /etc/profiles/per-user/snowbear/bin/nvim; run tests/bench_outline.lua under Neovim 0.11.7 and 0.12.4; inspect host package.loaded state",
+      "result": "The repeat 20-pair warm host/plugin-free profile measured the host startup marker at 46.407/66.928 ms p50/p95, UI first frame at 60.366/124.825 ms and first input state at 1.865/2.161 ms; all startup markers remained below the 150 ms limit. Host process-wall p95 was 196.572 ms and plugin-free process-wall p95 was 135.851 ms, consistent with the isolated scheduling/UI outliers in the first repeat; startup profile rows over 5 ms contain existing vim.lsp/themekit/autoconf work only. A host startup inspection found workbench, the outline controller, outline UI and LSP provider all absent from package.loaded. In warm 10k-symbol measurements on minimum/current Neovim, View mount was 34.604/39.852 ms; dynamic cursor updates were 154.125/161.792 us p50 and 169.458/187.542 us p95; indexed enclosing lookup p95 was below 1 us. Source-order and filtering projections stayed below 3.3 ms p95; name-order sorting was 17.091/13.682 ms p95. The benchmark also measures 2k symbols and compares the indexed lookup against the exact scan fallback. These are local warm macOS results, not cold-cache or Linux claims.",
+      "artifacts": [
+        "tests/bench_outline.lua",
+        ".bench-output/startup/20260912T220628Z-baseline-3bd2ff/baseline.json",
+        "lua/workbench/ui/outline.lua",
+        "lua/workbench/ui/view.lua",
+        "lua/workbench/controllers/outline.lua"
+      ]
+    }
+  ]
+}

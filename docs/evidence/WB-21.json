@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "task": "WB-21",
+  "revision": "Workbench HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the dirty WB-01..WB-20 tree and tested WB-21 changes. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6; mini.test 0.16.0; pynvim 0.6.0; msgpack 1.1.1. Linux was unavailable locally.",
+  "summary": "Implemented a bounded, reviewed local-filesystem operation service for exclusive file/directory creation, regular-file copy, rename/move, and adapter-backed recoverable trash. Paths and source/target/parent preimages are revalidated before mutation; case-only rename uses an intermediate hard link, copy verifies bytes/mode/identity, open clean buffers are rebound with text/undo retained, and dirty/symlink/outside-root/cyclic/cross-device/overwrite cases fail closed. Workspace rename requests honor static/dynamic LSP filters and encoding, apply a compatible bounded WorkspaceEdit before filesystem rename, and send didRenameFiles only after success. Resource operations and malformed/oversized edits are refused. Active plans are capped at 32, terminal payloads are released, and only 32 terminal summaries are retained. Directories are not moved/renamed/copied; default trash and permanent deletion are unavailable; cross-device moves are unsupported.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; review docs/tasks.json#WB-21 ownership and claimed paths",
+      "result": "Ownership validation passed for 36 Workbench Lua modules. WB-21 changes are within the claimed operations service, LSP/files providers, Files controller, tests, Makefile and docs/evidence paths. No sibling plugin, root config, Nix input, host default, or external repository was changed by this task.",
+      "artifacts": [
+        "docs/tasks.json",
+        "lua/workbench/services/operations.lua",
+        "lua/workbench/providers/lsp.lua",
+        "lua/workbench/controllers/files.lua",
+        "tests/check_ownership.py",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test",
+      "result": "All 146 mini.test cases passed on Neovim 0.11.7 and 0.12.4. WB-21 service tests cover create/collision/overlap, byte-verified copy and permission preservation, move/rename/case-only rename, buffer undo/rebind, stale and dirty preimages, hard-link collisions, symlinks/outside-root/cyclic moves, injected permissions/EXDEV/partial writes, trash adapters, LSP ordering/recovery, bounded plans and disposal. Provider/controller tests cover filters, encoding, conflicts, malformed/resource edits, cancellation, exact review, trash hiding and stale confirmation suppression.",
+      "artifacts": [
+        "tests/runtime/test_operations_service.lua",
+        "tests/runtime/test_operations_lsp_provider.lua",
+        "tests/runtime/test_files_operations_controller.lua",
+        "tests/runtime/run.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect cancellation, stale-generation, overlap, failure-recovery and disposal tests",
+      "result": "Cancelling/disposal of in-flight file-operation requests cancels native LSP requests and ignores late replies. A Files workspace/root change cancels a pending review and its late confirmation cannot mutate the old workspace. Overlapping plans are rejected, stale preimages fail before mutation, partial copy cleans only its owned inode, uncertain LSP application records manual recovery and suppresses didRenameFiles, and service/controller/provider/layout resource inventories are empty after disposal. Active plans are bounded at 32.",
+      "artifacts": [
+        "tests/runtime/test_operations_service.lua",
+        "tests/runtime/test_operations_lsp_provider.lua",
+        "tests/runtime/test_files_operations_controller.lua",
+        ".test-output/e2e/wb21/20260913T050034Z-120x35-f417d6/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-120x35-a39864/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb21_operations.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim <Neovim 0.11.7 or 0.12.4>",
+      "result": "The actual RPC/ext_linegrid flow passed on both Neovim versions at all four grid sizes. It opens Files from an editor-owned origin, types a real filename, renders the exact operation/path before mutation, confirms the explicit Apply item, observes the empty created file and refreshed tree, then closes Files and verifies editor cwd/buffer/focus preservation and zero active requests/resources after disposal. The destination remained absent until confirmation.",
+      "artifacts": [
+        "tests/e2e/wb21_operations.py",
+        ".test-output/e2e/wb21/20260913T050034Z-160x50-9a25d4/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-120x35-f417d6/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-80x24-a91154/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-60x20-a70b60/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-160x50-0242d9/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-120x35-a39864/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-80x24-ed809e/result.json",
+        ".test-output/e2e/wb21/20260913T050035Z-60x20-13f1dd/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "python bench/startup.py --runs 5 --nvim nvim; nvim --headless --startuptime /tmp/wb21-startup-final-20260913b.log -c 'qa!'; inspect WB-21 RPC timing artifacts",
+      "result": "The fresh host startup marker was 62.613 ms, below the 150 ms budget; five interleaved samples measured 48.089 ms p50 / 49.365 ms p95, first UI frame 61.300 / 66.762 ms p50/p95, and first input state 2.148 / 2.408 ms. The startup log did not load the operations service, Files controller or LSP provider. Confirmed create operation latency across both Nvim versions/four grids was 14.900–38.665 ms.",
+      "artifacts": [
+        "docs/evidence/WB-21-startup.txt",
+        ".bench-output/startup/20260913T050041Z-baseline-549e43/baseline.json",
+        ".test-output/e2e/wb21/20260913T050034Z-160x50-9a25d4/result.json",
+        ".test-output/e2e/wb21/20260913T050034Z-80x24-ed809e/result.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test; make check-ownership test-integration; python3 scripts/check_plan.py",
+      "result": "Both minimum/current Neovim runtime suites passed (146 cases each); ownership validation and all 21 Python plan/harness integration tests passed, and the plan checker accepted the task graph. WB-21 adds no host integration, Autoconf mapping, Nix runtime pin or root configuration change. Validation ran on macOS; Linux was unavailable.",
+      "artifacts": [
+        "Makefile",
+        "tests/check_ownership.py",
+        "tests/test_plan.py",
+        "tests/test_harness_tools.py",
+        "scripts/check_plan.py",
+        "docs/tasks.json"
+      ]
+    },
+    {
+      "id": "G6",
+      "status": "pass",
+      "command": "make test; inspect WB-21 injected stale/collision/permission/symlink/cross-device/partial-copy/LSP failure tests and real review grids",
+      "result": "Failure evidence proves no silent overwrite for existing files or hard links; stale source/workspace generation, dirty buffers, symlinks, outside-root targets, directory cycles, permissions, cross-device links, conflicting/malformed/oversized LSP edits and unsupported LSP resource operations fail closed. Partial copy cleanup checks inode ownership; uncertain WorkspaceEdit application is recorded as manual recovery and no didRenameFiles success notification is sent. Case-only rename preserves the exact directory entry; clean open-buffer rename preserves text and undo. Default trash is unavailable and hidden without an adapter; the injected adapter must provide a recoverable receipt. No permanent-delete action is exposed.",
+      "artifacts": [
+        "tests/runtime/test_operations_service.lua",
+        "tests/runtime/test_operations_lsp_provider.lua",
+        "tests/runtime/test_files_operations_controller.lua",
+        "lua/workbench/services/operations.lua",
+        "lua/workbench/providers/lsp.lua",
+        "lua/workbench/controllers/files.lua"
+      ]
+    }
+  ]
+}

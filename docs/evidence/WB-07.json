@@ -1,0 +1,82 @@
+{
+  "task": "WB-07",
+  "revision": "Dirty workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a; WB-07 implementation remains uncommitted and unpublished.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 (minimum) and 0.12.4 (host/current); Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1, ripgrep 15.2.0. Isolated Neovim processes used explicit temporary workspaces and real RPC UI grids.",
+  "summary": "Implemented an asynchronous read-only Files provider/controller with immediate-directory enumeration, bounded sorting/caches, project ignore handling, lazy branch expansion, stable loaded-tree filtering, reveal, copy/search/refresh actions, symlink containment/cycle handling, per-tab sessions and state retention. Real filesystem and RPC UI tests pass on both supported Neovim versions. User-global ignore sources and .git/info/exclude are deliberately unsupported and explicitly surfaced in Files help/status; no filesystem mutation actions are exposed. Host activation/composition belongs to the later integration task.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; git diff --check",
+      "result": "Ownership validation passed for all 14 workbench Lua modules. Filesystem provider depends only on core resource/root-policy/scope primitives; controllers compose the provider with UI layout; render/layout code does not import filesystem services. WB-07 source, tests, Makefile and provider-limit documentation remain within its declared ownership paths. No hosted CI, filesystem mutation shortcut or runtime dependency was added.",
+      "artifacts": [
+        "tests/check_ownership.py",
+        "lua/workbench/providers/filesystem.lua",
+        "lua/workbench/controllers/files.lua",
+        "lua/workbench/ui/layout.lua",
+        "docs/PROVIDERS.md"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 39 mini.test cases passed on Neovim 0.11.7 and 0.12.4. Provider/controller coverage includes asynchronous enumeration, raw newline paths, stable directory/file ordering, nested .gitignore/.ignore behavior, empty ignored directories, bounded cache/invalidation, outside-root rejection, stale cancellation, distinct EACCES/ENOENT errors, independent tab views, tab-close cleanup, root changes, state retention and policy reload. All 21 Python integration tests and the plan structure checker passed.",
+      "artifacts": [
+        "tests/runtime/test_files_provider.lua",
+        "tests/runtime/test_files_controller.lua",
+        "tests/test_harness_tools.py",
+        "scripts/check_plan.py"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test-ui",
+      "result": "The final RPC-UI run passed on both Neovim versions and all four terminal grids (160x50, 120x35, 80x24 and 60x20). Eight Files runs exercised actual keyboard and mouse input, hidden/project-ignore toggles, branch and root refresh, copy/search context actions, reveal, file-open focus return, save invalidation, independent tabs, close/reopen retention, root changes, external symlink blocking, cycle prevention and error reporting. Final teardown in every run preserved the modified user buffer and cwd, released all Files view buffers, and reported zero controller sessions, active requests, cache directories, layout views and owned layout resources.",
+      "artifacts": [
+        "tests/e2e/wb07_files.py",
+        ".test-output/e2e/wb07/20260912T164637Z-160x50-26939c/result.json",
+        ".test-output/e2e/wb07/20260912T164637Z-120x35-b06dbd/result.json",
+        ".test-output/e2e/wb07/20260912T164637Z-80x24-c88a73/result.json",
+        ".test-output/e2e/wb07/20260912T164637Z-60x20-bbf091/result.json",
+        ".test-output/e2e/wb07/20260912T164643Z-160x50-e5a724/result.json",
+        ".test-output/e2e/wb07/20260912T164644Z-120x35-0f85e3/result.json",
+        ".test-output/e2e/wb07/20260912T164645Z-80x24-3d39e5/result.json",
+        ".test-output/e2e/wb07/20260912T164645Z-60x20-8ed711/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "make test-ui (Neovim 0.11.7 and 0.12.4; 160x50, 120x35, 80x24 and 60x20)",
+      "result": "All eight actual-grid Files acceptance runs passed. They verified `.gitignore`, nested `.gitignore`, `.ignore` and empty ignored-directory behavior; newline/Unicode display with raw names preserved; hidden and project-ignore policy changes; external symlink non-following and nested cycle termination; stable filter clearing; read-only file activation into the origin window; in-root reveal and actionable outside-root result; retryable vanished-directory error; per-tab isolation; and read-only context actions. The controller and sidebar explicitly report global ignore and .git/info/exclude sources as unavailable rather than implying parity. First interactive Files view measured 7.013–16.394ms across the final matrix.",
+      "artifacts": [
+        "tests/e2e/wb07_files.py",
+        "docs/PROVIDERS.md",
+        ".test-output/e2e/wb07/20260912T164637Z-160x50-26939c/ui-grid.json",
+        ".test-output/e2e/wb07/20260912T164637Z-120x35-b06dbd/ui-grid.json",
+        ".test-output/e2e/wb07/20260912T164637Z-80x24-c88a73/ui-grid.json",
+        ".test-output/e2e/wb07/20260912T164637Z-60x20-bbf091/ui-grid.json",
+        ".test-output/e2e/wb07/20260912T164643Z-160x50-e5a724/ui-grid.json",
+        ".test-output/e2e/wb07/20260912T164644Z-120x35-0f85e3/ui-grid.json",
+        ".test-output/e2e/wb07/20260912T164645Z-80x24-3d39e5/ui-grid.json",
+        ".test-output/e2e/wb07/20260912T164645Z-60x20-8ed711/ui-grid.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "make test-ui; .test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim",
+      "result": "A real filesystem fixture with 20,000 immediate siblings completed with all 20,000 results and stable sorted endpoints on both runtimes. Neovim 0.11.7 provider p50/p95 was 447.893/476.038ms; Neovim 0.12.4 was 482.335/564.265ms. The final 20-run host startup profile measured startup-marker p50/p95 43.560/44.205ms, versus the prior 43.242/44.124ms baseline (0.318/0.081ms delta, within the 10ms investigation threshold and 150ms budget). No Workbench feature module appeared in startup profile rows; the new feature remains lazy-loaded. Host first-UI-frame p50/p95 was 57.166/60.260ms and first-input-state was 1.828/1.896ms.",
+      "artifacts": [
+        "tests/e2e/wb07_stress.py",
+        ".test-output/e2e/wb07-stress/20260912T164638Z-b0d264/result.json",
+        ".test-output/e2e/wb07-stress/20260912T164646Z-29127c/result.json",
+        "bench/startup.py",
+        ".bench-output/startup/20260912T164116Z-baseline-7645b8/baseline.json",
+        ".bench-output/startup/20260912T164116Z-baseline-7645b8/startup-000-host/startup.log"
+      ]
+    }
+  ]
+}

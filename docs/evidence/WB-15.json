@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "task": "WB-15",
+  "revision": "Workbench base commit 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the cumulative authorized dirty WB-01..WB-15 worktree at test time. docs/evidence/WB-15.dirty.diff records the full dirty-tree delta from that base (including untracked implementation and test files); this evidence record and the final task-status edit were added after the tested code snapshot. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1; gopls v0.22.0 with Go 1.26.6. Linux was unavailable locally. Startup measurements used warm interleaved host/plugin-free runs; cold-cache measurements were not taken.",
+  "summary": "Implemented typed native-LSP call-hierarchy preparation and edge normalization plus a per-tab Calls controller. Preparation retains multiple roots and the exact originating client/item payload. Incoming/outgoing edge expansion is lazy and direction-switchable; distinct call edges and incoming callsites remain navigable, and direct/mutual recursion is marked without unbounded expansion. Visible depth, child and total-edge limits, partial/error rows, stale-document rejection, request cancellation, tab isolation, and navigation return are covered. Host startup wiring was not changed. Local unit, integration, ownership, real-gopls RPC-grid and startup/per-interaction checks passed on both supported Neovim versions; no publication or host rollout was attempted.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-15 allowed paths, call provider/controller boundary, resource ownership and disposal",
+      "result": "WB-15 production ownership is the LSP provider normalization and Calls controller, with tests/E2E and Makefile wiring in the task's admitted paths. The provider owns each native-client request and its cancellation/normalization lifecycle; the controller owns each tab session, preparation/edge request scope, expansion state and call view, and delegates navigation to the shared Navigation service. Closing a view/tab, changing direction or collapsing an in-flight node cancels only owned requests; controller disposal releases its actions/sessions. The ownership checker passed for all 27 Lua modules. No root host mappings, startup bootstrap or Nix wiring changed. The tested cumulative dirty tree from base commit 0534135d877ec3679bb91ee0b4a68b71e174ff7a is captured in docs/evidence/WB-15.dirty.diff.",
+      "artifacts": [
+        "docs/evidence/WB-15.dirty.diff",
+        "docs/tasks.json",
+        "docs/CONTRACTS.md",
+        "lua/workbench/providers/lsp.lua",
+        "lua/workbench/controllers/calls.lua",
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/runtime/test_calls_controller.lua",
+        "tests/check_ownership.py",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 102 mini.test cases passed on Neovim 0.11.7 and 0.12.4; all 21 Python integration and plan checks passed. Provider/controller coverage includes typed prepare/incoming/outgoing payloads and direction-specific call ranges; multiple roots and per-client encoding; originating-client opaque data; lazy requests; distinct edges to the same target; self and mutual recursion; incoming callsite navigation; outgoing navigation and return; partial prepare/expansion failures; visible child/depth caps; unsupported capability; stale source rejection; and unchanged sibling-tab operation.",
+      "artifacts": [
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/runtime/test_calls_controller.lua",
+        "lua/workbench/providers/lsp.lua",
+        "lua/workbench/controllers/calls.lua",
+        "tests/test_harness_tools.py",
+        "scripts/check_plan.py"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect direction-switch, collapse, stale-document, close-pending and sibling-tab Calls lifecycle cases",
+      "result": "The deterministic controller tests cancel pending expansions on direction change, collapse and tab close; deliberately delivered late results do not add stale children. A source document changed after preparation cannot issue a valid expansion. Closing one tab cancels its pending request while a second tab's request completes normally. Real gopls teardown also ended with zero Calls sessions, LSP requests, palette views and layout resources, and its client was stopped.",
+      "artifacts": [
+        "tests/runtime/test_calls_controller.lua",
+        "lua/workbench/controllers/calls.lua",
+        ".test-output/e2e/wb15/20260912T234828Z-160x50-93c250/result.json",
+        ".test-output/e2e/wb15/20260912T234912Z-160x50-8dd067/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb15_calls.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim nvim; repeat with --nvim .test-deps/neovim-0.11.7/bin/nvim",
+      "result": "The WB-15 real ext_linegrid/RPC journey passed on Neovim 0.11.7 and 0.12.4 at 160x50, 120x35, 80x24 and 60x20. It used actual keyboard input with gopls v0.22.0 over native LSP: prepare a root, expand outgoing edges only on demand, render a mutual-recursion cycle, switch to incoming calls, navigate to the caller's fromRanges callsite, return to the origin and close. All 17 successful recorded runs reported lazy=true, navigation_returned=true and zero owned resources. Representative complete four-grid batches are 20260912T234912Z on 0.11.7 and 20260912T234828Z on 0.12.4; the result files include exact runtime, grid, request sequence, timing and cleanup state.",
+      "artifacts": [
+        "tests/e2e/wb15_calls.py",
+        "Makefile",
+        ".test-output/e2e/wb15/20260912T234912Z-160x50-8dd067/result.json",
+        ".test-output/e2e/wb15/20260912T234912Z-120x35-bf3b1b/result.json",
+        ".test-output/e2e/wb15/20260912T234912Z-80x24-f42f67/result.json",
+        ".test-output/e2e/wb15/20260912T234912Z-60x20-cf953f/result.json",
+        ".test-output/e2e/wb15/20260912T234828Z-160x50-93c250/result.json",
+        ".test-output/e2e/wb15/20260912T234828Z-120x35-a60c40/result.json",
+        ".test-output/e2e/wb15/20260912T234828Z-80x24-717796/result.json",
+        ".test-output/e2e/wb15/20260912T234828Z-60x20-3843ce/result.json",
+        ".test-output/e2e/wb15/20260912T234828Z-160x50-93c250/prepared-grid.json",
+        ".test-output/e2e/wb15/20260912T234828Z-160x50-93c250/outgoing-grid.json",
+        ".test-output/e2e/wb15/20260912T234828Z-160x50-93c250/incoming-grid.json",
+        ".test-output/e2e/wb15/20260912T234828Z-160x50-93c250/final-grid.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim; summarize timings_ms from all successful .test-output/e2e/wb15/*/result.json files",
+      "result": "On the same warm Macmini9,1 host, 20 interleaved startup pairs measured the normal host startup marker at 43.799/45.113 ms p50/p95 (below the 150 ms reference-host median threshold), UI first frame at 57.553/60.553 ms and first input state at 1.808/1.849 ms; plugin-free startup marker was 8.537/8.870 ms. WB-15 adds no eager host startup wiring. Relevant real-server interaction timings across successful E2E samples (nearest-rank p95 is the maximum for these small samples): Neovim 0.11.7, n=8, prepare p50/p95 87.286/97.341 ms and first outgoing expansion 15.331/16.061 ms; Neovim 0.12.4, n=9, prepare 94.426/100.050 ms and first expansion 15.789/16.381 ms. These are warm local smoke samples, not cold-cache or Linux claims. Full startup profile metadata is in .bench-output/startup/20260912T234938Z-baseline-0db661/baseline.json.",
+      "artifacts": [
+        ".bench-output/startup/20260912T234938Z-baseline-0db661/baseline.json",
+        ".test-output/e2e/wb15/20260912T234912Z-160x50-8dd067/result.json",
+        ".test-output/e2e/wb15/20260912T234828Z-160x50-93c250/result.json",
+        "tests/e2e/wb15_calls.py",
+        "lua/workbench/controllers/calls.lua"
+      ]
+    }
+  ]
+}

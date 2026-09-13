@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "task": "WB-16",
+  "revision": "Cumulative authorized dirty WB-01..WB-16 worktree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a. docs/evidence/WB-16.dirty.diff records the complete worktree delta from that base, including untracked implementation/tests and the final task/evidence records, while excluding only the diff file itself. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1. Native diagnostics used Neovim's vim.diagnostic API; LSP detach used the deterministic local stdio fake server. Linux and cold-cache startup were unavailable/not measured.",
+  "summary": "Implemented a shared native diagnostics provider with scoped DiagnosticChanged/BufWipeout listeners and idempotent consumer leases; Problems groups diagnostics by root/file/namespace with exact severity/source/root filters, safe location navigation, explicit reported-only/incomplete coverage, and empty-state wording that never claims the workspace is clean. Files now aggregates changed-resource badges incrementally. Tests cover sibling-namespace preservation, diagnostic deletion, native LSP detach, unrelated roots, unnamed buffers, no-diagnostic state, shared Files/Problems leases, foreign autocmd preservation, and closing all consumers without clearing editor diagnostics. Added a keyboard-driven Problems RPC-grid journey to test-e2e. No host startup, root configuration, or Nix wiring changed.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-16 ownership, provider/controller boundaries and resource disposal",
+      "result": "WB-16 is within the declared workbench providers/controllers/tests/Makefile paths. The Diagnostics provider owns one augroup with DiagnosticChanged and BufWipeout handlers only while at least one lease is active; the last release removes both handlers and the in-memory projection without resetting Neovim diagnostics. Problems owns each tab session, action registration, view, and lease; Files owns its separate badge lease and per-resource/ancestor counts. Navigation is injected through the shared service. Manual boundary review found no provider-to-UI dependency. The ownership check passed for all 29 Lua modules; the cumulative diff records every dirty and untracked file. No root host mappings, init bootstrap, or Nix files changed.",
+      "artifacts": [
+        "docs/evidence/WB-16.dirty.diff",
+        "docs/tasks.json",
+        "docs/CONTRACTS.md",
+        "docs/PROVIDERS.md",
+        "docs/ARCHITECTURE.md",
+        "lua/workbench/providers/diagnostics.lua",
+        "lua/workbench/controllers/problems.lua",
+        "lua/workbench/controllers/files.lua",
+        "tests/check_ownership.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 108 mini.test cases passed on both Neovim 0.11.7 and 0.12.4. All 21 Python integration/plan tests passed, and scripts/check_plan.py reported valid planning structure. The runtime suite includes provider snapshots and namespace provenance, incremental update after one namespace resets, complete deletion, fake native-LSP diagnostic publication/detach, Problems severity/source/root filtering and navigation/return, incomplete empty state, shared Files/Problems hooks, badge updates, diagnostic preservation, and foreign-autocmd preservation.",
+      "artifacts": [
+        "tests/runtime/test_diagnostics.lua",
+        "tests/fixtures/lsp_server.py",
+        "lua/workbench/providers/diagnostics.lua",
+        "lua/workbench/controllers/problems.lua",
+        "lua/workbench/controllers/files.lua",
+        "tests/test_harness_tools.py",
+        "scripts/check_plan.py"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "WORKBENCH_TEST_FILE=tests/runtime/test_diagnostics.lua make test; inspect deletion, detach, root filtering, empty/incomplete coverage, shared leases and disposal assertions",
+      "result": "All six focused diagnostic cases passed on both Neovim versions. Clearing one native namespace retains the sibling namespace; clearing the final diagnostic removes the URI report. Detaching the fake native LSP client removes its report while the active provider listener remains live. Unnamed and unrelated-root buffers are excluded. With no diagnostics, Problems explicitly reports unknown completeness and does not say the workspace is clean. Files and Problems share one provider group; closing one keeps the other's listener active, and closing the last removes the group while editor diagnostics and a foreign DiagnosticChanged autocmd remain intact.",
+      "artifacts": [
+        "tests/runtime/test_diagnostics.lua",
+        "tests/fixtures/lsp_server.py",
+        "lua/workbench/providers/diagnostics.lua",
+        "lua/workbench/controllers/problems.lua",
+        "lua/workbench/controllers/files.lua"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb16_problems.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim .test-deps/neovim-0.11.7/bin/nvim; repeat with --nvim nvim",
+      "result": "The real ext_linegrid/RPC journey passed at all four grid sizes on Neovim 0.11.7 and 0.12.4. It uses native vim.diagnostic.set data and keyboard input to open Problems through the shared action palette, expand a file, observe a live DiagnosticChanged update, filter severity/source/root, open a selected reported location, return to origin, and close. Every run reported reported-only coverage, preserved all three native diagnostics after close, navigated to line 2 column 3, and ended with zero leases and zero provider hooks. The same command is wired into the Makefile test-e2e target.",
+      "artifacts": [
+        "tests/e2e/wb16_problems.py",
+        "Makefile",
+        ".test-output/e2e/wb16/20260913T004700Z-160x50-6480d7/result.json",
+        ".test-output/e2e/wb16/20260913T004700Z-120x35-d83fad/result.json",
+        ".test-output/e2e/wb16/20260913T004700Z-80x24-001528/result.json",
+        ".test-output/e2e/wb16/20260913T004701Z-60x20-e7d00c/result.json",
+        ".test-output/e2e/wb16/20260913T004700Z-160x50-2e0485/result.json",
+        ".test-output/e2e/wb16/20260913T004700Z-120x35-f95b8c/result.json",
+        ".test-output/e2e/wb16/20260913T004700Z-80x24-645ccd/result.json",
+        ".test-output/e2e/wb16/20260913T004701Z-60x20-0ee722/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim; compare against the WB-15 same-host baseline and inspect WB-16 DiagnosticChanged-to-render samples",
+      "result": "On the same warm Macmini9,1/Nvim 0.12.4 host, the repeat 20-pair run measured host startup marker p50/p95 44.297/45.034 ms versus the prior baseline 43.799/45.113 ms; median delta was +0.498 ms and both medians remain well below the 150 ms limit. UI first-frame p50/p95 was 57.703/60.390 ms versus 57.553/60.553 ms; first-input state was 1.836/1.936 ms versus 1.808/1.849 ms. The repeat removed transient outliers from the first after-run (p95 68.406 ms), so that tail was investigated rather than hidden. Startup profiles show existing host vim.lsp, themekit, and autoconf costs; the new Diagnostics provider/controller are not loaded on startup and no startup/bootstrap files changed. Across the eight final RPC-grid samples, native DiagnosticChanged-to-render measured 1.688–2.307 ms. These are warm local results; cold cache and Linux were not measured.",
+      "artifacts": [
+        ".bench-output/startup/20260913T004410Z-baseline-21bc77/baseline.json",
+        ".bench-output/startup/20260913T004130Z-baseline-e5ce1a/baseline.json",
+        ".bench-output/startup/20260912T234938Z-baseline-0db661/baseline.json",
+        ".test-output/e2e/wb16/20260913T004700Z-160x50-6480d7/result.json",
+        ".test-output/e2e/wb16/20260913T004700Z-120x35-f95b8c/result.json",
+        "tests/e2e/wb16_problems.py",
+        "lua/workbench/providers/diagnostics.lua",
+        "lua/workbench/controllers/problems.lua"
+      ]
+    }
+  ]
+}

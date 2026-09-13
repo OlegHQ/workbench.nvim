@@ -1,0 +1,22 @@
+WB-21 startup and interaction profile
+====================================
+
+Host command:
+  nvim --headless --startuptime /tmp/wb21-startup-final-20260913b.log -c 'qa!'
+
+Neovim reached the NVIM STARTED marker at 62.613 ms, below the 150 ms host
+budget. The profile sourced plugin/workbench.lua but did not load
+workbench.services.operations, workbench.controllers.files, or
+workbench.providers.lsp. Filesystem operations remain lazy until a Files
+controller is created.
+
+Five interleaved host/plugin-free benchmark runs:
+  host startup marker: p50 48.089 ms, p95 49.365 ms
+  host first UI frame: p50 61.300 ms, p95 66.762 ms
+  host first input state: p50 2.148 ms, p95 2.408 ms
+
+The WB-21 real RPC operation journey measured 14.900–38.665 ms from the Files
+key through exact review, explicit confirmation, and destination creation over
+both supported Neovim versions and four UI grids. Full benchmark samples and
+RPC result/grid artifacts are retained under .bench-output/startup/ and
+.test-output/e2e/wb21/.

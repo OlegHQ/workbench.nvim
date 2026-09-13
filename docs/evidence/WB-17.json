@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "task": "WB-17",
+  "revision": "Cumulative authorized dirty WB-01..WB-17 worktree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a. docs/evidence/WB-17.dirty.diff records the full worktree delta from that base, including untracked implementation/tests and final task/evidence records, while excluding only the diff file itself. WB-17 changes are confined to tests/ and docs evidence/manifest. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6, mini.test 0.16.0, pynvim 0.6.0, msgpack 1.1.1; Pyright 1.1.411, typescript-language-server 5.3.0, rust-analyzer 1.94.0. Linux was unavailable locally.",
+  "summary": "Completed the discovery acceptance checkpoint without production-source changes. The real Pyright UX-05 journey uses actual Neovim input and ext_linegrid rendering to search, open a match, inspect references, navigate and return, then reopen the retained Search model with its query, scope, selection and results intact. Added controlled reverse-order two-client UTF-8/UTF-16 response coverage, hidden-tab no-refresh coverage, and real TypeScript and Rust language-server document-symbol/capability checks. Request counts, request completion time, input-to-render responsiveness, hidden-view idle behavior and final resource counts are recorded and asserted.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-17 allowed paths and test ownership",
+      "result": "WB-17 changes are limited to tests/runtime/test_lsp_provider.lua, tests/runtime/test_symbols_controller.lua, and instrumentation in tests/e2e/wb14_symbols.py, all under its tests/ ownership. No provider, controller, service, UI, startup or host source changed. Ownership validation passed for all 29 Lua modules; the complete dirty-tree snapshot is recorded.",
+      "artifacts": [
+        "docs/evidence/WB-17.dirty.diff",
+        "docs/tasks.json",
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/runtime/test_symbols_controller.lua",
+        "tests/e2e/wb14_symbols.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test; make test-integration",
+      "result": "All 111 mini.test cases passed on both Neovim 0.11.7 and 0.12.4; all 21 Python integration/plan checks passed. Tests include reverse-order callbacks from two clients with distinct UTF-8/UTF-16 encodings, exact unsupported-capability reporting, hidden-tab provider request counts, and native TypeScript/rust-analyzer symbol requests. The existing real Pyright UX-05 acceptance remains part of the complete runtime checkpoint.",
+      "artifacts": [
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/runtime/test_symbols_controller.lua",
+        "tests/e2e/wb14_symbols.py",
+        "scripts/check_plan.py",
+        "tests/test_harness_tools.py"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect reverse-order two-client provider results, hidden-view tab-switch behavior and UX-05 teardown counts",
+      "result": "The fake-client race deliberately delivers client 32's UTF-16 Location result before client 31's UTF-8 LocationLink result; both retain the correct order, shape, client provenance, encoding and ranges after scheduled normalization. A Symbols result view kept in a background tab starts no additional provider request when tabs change and an editor BufEnter is observed. Each real-server UX-05 run closes Search/Symbols and ends with zero active rg/LSP requests, sessions and layout views.",
+      "artifacts": [
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/runtime/test_symbols_controller.lua",
+        "tests/e2e/wb14_symbols.py",
+        ".test-output/e2e/wb14/20260913T011142Z-160x50-348ec4/result.json",
+        ".test-output/e2e/wb14/20260913T011130Z-160x50-49a7c4/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb14_symbols.py --nvim .test-deps/neovim-0.11.7/bin/nvim --grid-sizes 160x50,120x35,80x24,60x20; repeat with --nvim nvim",
+      "result": "The complete real-Pyright UX-05 ext_linegrid/RPC journey passed on both supported Neovim versions at all four grid sizes. Actual keyboard actions searched the current file, opened a match, invoked references through the shared action registry, opened a reference, returned to source and origin, and resumed the retained Search result model. Each run preserved three references and the original Search state. Switching to a second tab with both views hidden triggered no provider refresh. The rendered grids and result JSON are retained.",
+      "artifacts": [
+        "tests/e2e/wb14_symbols.py",
+        ".test-output/e2e/wb14/20260913T011142Z-160x50-348ec4/result.json",
+        ".test-output/e2e/wb14/20260913T011142Z-120x35-e427a2/result.json",
+        ".test-output/e2e/wb14/20260913T011143Z-80x24-5a9e0c/result.json",
+        ".test-output/e2e/wb14/20260913T011143Z-60x20-eca4b5/result.json",
+        ".test-output/e2e/wb14/20260913T011130Z-160x50-49a7c4/result.json",
+        ".test-output/e2e/wb14/20260913T011130Z-120x35-78647f/result.json",
+        ".test-output/e2e/wb14/20260913T011131Z-80x24-378f67/result.json",
+        ".test-output/e2e/wb14/20260913T011131Z-60x20-54e949/result.json",
+        ".test-output/e2e/wb14/20260913T011143Z-80x24-5a9e0c/references-grid.json",
+        ".test-output/e2e/wb14/20260913T011143Z-80x24-5a9e0c/resumed-search-grid.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Measure per-interaction provider starts and monotonic request/render timings in tests/e2e/wb14_symbols.py across all eight Neovim/grid runs",
+      "result": "Every sequential UX-05 run issued exactly one ripgrep search request and one textDocument/references request. On Neovim 0.11.7, LSP completion measured 86.003–90.682 ms and input-to-render 92.325–100.663 ms; on 0.12.4, LSP completion measured 81.579–94.512 ms and input-to-render 87.681–109.262 ms. Each ~120 ms hidden-tab interval plus return produced no request-count increase. A simultaneous two-runtime run produced one 0.12.4 60x20 outlier of 170.289 ms input-to-render; an isolated repeat measured 123.651 ms, and the sequential current-version four-grid batch remained below 110 ms. This points to process contention as a plausible cause, but is an inference. All eight sequential runs ended with zero owned provider, session and layout resources.",
+      "artifacts": [
+        "tests/e2e/wb14_symbols.py",
+        ".test-output/e2e/wb14/20260913T011142Z-160x50-348ec4/result.json",
+        ".test-output/e2e/wb14/20260913T011142Z-120x35-e427a2/result.json",
+        ".test-output/e2e/wb14/20260913T011143Z-80x24-5a9e0c/result.json",
+        ".test-output/e2e/wb14/20260913T011143Z-60x20-eca4b5/result.json",
+        ".test-output/e2e/wb14/20260913T011130Z-160x50-49a7c4/result.json",
+        ".test-output/e2e/wb14/20260913T011130Z-120x35-78647f/result.json",
+        ".test-output/e2e/wb14/20260913T011131Z-80x24-378f67/result.json",
+        ".test-output/e2e/wb14/20260913T011131Z-60x20-54e949/result.json",
+        ".test-output/e2e/wb14/20260913T011100Z-60x20-5b6c18/result.json",
+        ".test-output/e2e/wb14/20260913T011114Z-60x20-64f8fa/result.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test; run real-server UX-05 grids on Neovim 0.11.7 and 0.12.4",
+      "result": "Minimum/current Neovim compatibility passed. Real Pyright references and navigation passed in the complete UI journey; installed typescript-language-server and rust-analyzer both returned complete real document-symbol results through Neovim native LSP and the Workbench provider. Each language-server test selected a protocol-known unsupported method and asserted state=unavailable, code=unsupported_method, and an exact reason naming that method. These are local macOS checks; Linux was unavailable.",
+      "artifacts": [
+        "tests/runtime/test_lsp_provider.lua",
+        "tests/e2e/wb14_symbols.py",
+        ".test-output/e2e/wb14/20260913T011142Z-160x50-348ec4/result.json",
+        ".test-output/e2e/wb14/20260913T011130Z-160x50-49a7c4/result.json"
+      ]
+    }
+  ]
+}

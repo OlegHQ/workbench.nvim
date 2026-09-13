@@ -2,7 +2,7 @@
 
 A keyboard-first workspace workbench for Neovim: persistent exploration, resumable search, code discovery, and dependable feature controls.
 
-**Status: implementation specification, not a working editor plugin.** This revision contains research, architecture contracts, agent instructions, a task graph, and planning validation. No runtime commands, sidebar, or providers have been implemented. There is no `plugin/` entrypoint to change editor startup.
+**Status: local runtime implementation under integration validation; not yet published or enabled by default.** The public `:Workbench` command reports status by default. Run `:Workbench enable` explicitly to open Files or Search; `:Workbench disable` disposes Workbench-owned views and providers. The default setting remains disabled.
 
 Repository: `OlegHQ/workbench.nvim`, development branch `dev`.
 
@@ -23,9 +23,23 @@ python3 scripts/check_plan.py --next
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-These commands validate the implementation package. They do not test a workbench runtime that does not yet exist.
+These commands validate planning structure only. They do not prove runtime behavior or host installation.
 
-All validation is local; there is no GitHub CI. WB-01 establishes the local Neovim harness, including `make test-e2e` for real input, rendered views, provider execution, focus and cleanup. Runtime acceptance must use that local end-to-end evidence.
+Set up the ignored, development-only dependencies and run the local harness with:
+
+```sh
+make bootstrap
+make test
+make test-integration
+make test-ui
+make test-e2e
+make bench
+make check-ownership
+```
+
+The harness checks Neovim 0.11.7 and the host binary. Runtime and E2E suites exercise the local implementation; they do not prove a published Nix installation. Benchmark fixtures and logs stay under ignored `.bench-output/` and `.test-output/` directories.
+
+All validation is local; there is no GitHub CI. WB-01 establishes the local Neovim harness, including `make test-e2e` for real RPC UI input, rendered grids, focus and cleanup. Feature tasks must add provider and user-journey scenarios; the initial probe does not establish feature acceptance.
 
 Suggested implementation request:
 
@@ -36,4 +50,4 @@ ownership and gates. Record reproducible evidence and update task status only
 after all applicable gates pass. Continue through the requested milestone.
 ```
 
-The plugin must also work independently of `autoconf.nvim` and `themekit.nvim`. In the nvim-config workspace it will be a native Git submodule, with TOML integration owned by autoconf and semantic theme mappings owned by themekit. Runtime integration is a later gated task.
+The plugin works independently of `autoconf.nvim` and `themekit.nvim`; those integrations add TOML settings and semantic theme mappings. In the nvim-config workspace it is a native Git submodule. Runtime publication, Nix installation wiring, exact revision parity, and host rollout remain gated integration work.

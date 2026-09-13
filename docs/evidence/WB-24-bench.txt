@@ -1,0 +1,32 @@
+WB-24 local UI benchmark
+========================
+
+Command (minimum):
+NVIM_TEST_BINARY=.test-deps/neovim-0.11.7/bin/nvim .test-deps/neovim-0.11.7/bin/nvim --clean --headless -u NONE -l tests/bench_ui.lua
+
+Command (current):
+NVIM_TEST_BINARY=nvim nvim --clean --headless -u NONE -l tests/bench_ui.lua
+
+The cold first-view and warm mount/close measurements are compared with the
+same `tests/bench_ui.lua` numbers recorded before WB-24 in `docs/evidence/WB-06.json`.
+The semantic link table grew from 7 to 20 entries; those links are installed
+only when a view is created.
+
+| Neovim | Metric | Before WB-24 | After WB-24 |
+|---|---|---:|---:|
+| 0.11.7 | cold require + mount | 4.871 ms | 6.818 ms |
+| 0.11.7 | warm mount/close p50 / p95 | 2.680 / 2.937 ms | 2.378 / 3.201 ms |
+| 0.11.7 | cached selection/render p50 / p95 | 225 / 249 us | 118 / 128 us |
+| 0.12.4 | cold require + mount | 5.217 ms | 6.067 ms |
+| 0.12.4 | warm mount/close p50 / p95 | 2.720 / 3.044 ms | 2.368 / 2.645 ms |
+| 0.12.4 | cached selection/render p50 / p95 | 227 / 250 us | 119 / 126 us |
+
+Both warm p95 mount/close values remain below the 8 ms render budget. Cold
+require+mount rises by 1.947 ms on 0.11.7 and 0.850 ms on 0.12.4, remaining
+below the 50 ms first-shell target. The 100-cycle microbenchmark ended with
+zero layout resources on each version. Eight final real-grid runs (both
+Neovim versions, four sizes) measured theme switch calls at 1.299–1.758 ms;
+the filesystem provider enumerated exactly once per run across both switches.
+This task did not modify init/plugin entrypoints or add startup autocommands;
+these results measure view first-use and interaction rather than claim a new
+paired host-startup profile.

@@ -1,0 +1,48 @@
+{
+  "task": "WB-04",
+  "revision": "Workbench base 0534135d877ec3679bb91ee0b4a68b71e174ff7a with the tested WB-04 dirty-tree implementation captured in docs/evidence/WB-04-model.diff (SHA-256 5bb7b2938ad34077951674ddb092a1bdbbe4504c6a3522bd88c0d3c756e4aa78). Host nvim-config HEAD 64dceb4df6ac4d3e9b571146101c00947c143b12. No commit or push was performed.",
+  "environment": "macOS 26.4.1 arm64 Macmini9,1; minimum Neovim 0.11.7 and current host Neovim 0.12.4; Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1, pinned development-only mini.test. Startup/UI measurements used the 20-pair local host/plugin-free harness with warm caches; model microbench used 25 samples of 500 operations per sample with a forced Lua GC before each sample.",
+  "summary": "Implemented file and virtual resources, explicitly encoded locations with deferred UTF-8/16/32 conversion against target text, workspace snapshots and root/symlink policy. Injected root and ignore services provide root discovery/canonicalization and one shared hidden/ignored/symlink policy snapshot. Canonical roots are cached by lexical alias and re-resolved on explicit refresh; tabs can retain independent workspaces, same-root attachment preserves generation, refresh advances generation, and removed or changed roots invalidate old identities. Ordered multi-root data is preserved but execution reports the planned single-root limit. Shared filesystem and search fixture files cover hidden entries, project and nested .gitignore, .ignore, include/exclude paths and explicit policy expectations. Files/Search filtering and parent/global ignore parity are not implemented by WB-04 and are documented as unavailable until WB-07/WB-09; no provider behavior is claimed.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "Review docs/CONTRACTS.md, docs/ARCHITECTURE.md, docs/PLAN.md#wb-04, docs/PROVIDERS.md and the changed module dependency/lifetime inventory; run make check-ownership and git diff --check.",
+      "result": "WB-04 runtime ownership is limited to lua/workbench/core/{resource,location,workspace,root_policy}.lua and lua/workbench/services/workspace.lua; tests, fixtures, task documentation and evidence are under workbench-owned paths. Core imports no service/provider/UI code; the workspace service imports core modules only and receives root/ignore adapters explicitly. Plain model tables own no processes, timers, watchers, subscriptions, buffers or windows. The workspace service owns its workspace records, launch options and canonical-root cache; remove() releases the record/options/cache idempotently, and callers receive independent defensive snapshots. No command entrypoint, init.lua, host/Nix integration, external dependency or hosted CI was added.",
+      "artifacts": [
+        "docs/evidence/WB-04-model.diff"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test",
+      "result": "All 17 mini.test cases passed on both Neovim 0.11.7 and 0.12.4 (16 WB-04 model cases plus the harness probe). Coverage includes escaped and invalid-byte file paths, virtual URIs, UTF-8/16/32 coordinate conversion after target text is supplied, emoji/surrogate boundaries, combining characters, CJK, tabs and CRLF, malformed ranges, root precedence, nested repositories, aliases, explicit folder scope, marker/cwd fallback, case-sensitive identities, containment boundaries, followed-symlink cycles/external targets, policy validation, shared fixture existence/policy equality, ordered multi-root snapshots and explicit unsupported capability state.",
+      "artifacts": [
+        "tests/runtime/test_workspace_model.lua",
+        "tests/lua/fixtures/policy.lua",
+        "tests/fixtures/workspace-policy/.gitignore",
+        "tests/fixtures/workspace-policy/.ignore"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "Run make test; inspect the repeated-open/remove, root-refresh, alias-target-change and independent-workspace cases in tests/runtime/test_workspace_model.lua.",
+      "result": "One hundred distinct workspace open/remove cycles leave zero retained workspace records and no current old snapshot. Reopening an identical root for another consumer preserves its generation and canonicalizes only once; explicit refresh advances generation and rejects the old snapshot. If an alias resolves to a new canonical root, refresh invalidates/removes the previous identity; if canonicalization fails because the root vanished, the prior valid snapshot remains intact. Switching tabs/workspace IDs and removing one record does not invalidate a sibling workspace. No asynchronous callbacks or external handles are created by WB-04, so there are no late external emissions to leak.",
+      "artifacts": [
+        "tests/runtime/test_workspace_model.lua"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Run for each binary: .test-deps/neovim-0.11.7/bin/nvim --clean --headless -u NONE -l tests/bench_workspace_model.lua and nvim --clean --headless -u NONE -l tests/bench_workspace_model.lua; then run .test-deps/venv/bin/python bench/startup.py --runs 20 --nvim nvim.",
+      "result": "Warm 25x500 model samples (p50/p95 microseconds per operation): resource construction 0.11.7 4.212/4.459 and 0.12.4 4.341/4.493; defensive workspace snapshot 0.678/0.713 and 0.762/0.797; same-root attach 9.799/10.298 and 11.092/11.440; explicit refresh 9.223/9.458 and 9.737/9.925; UTF-16-to-byte range resolution 0.152/0.168 and 0.187/0.199. An initial minimum-version profile measured resource construction at about 117 microseconds p95; replacing per-path vim.fn absolute checks and adding an ASCII display fast path brought it to 4.46 microseconds p95. On the reference host, 20 interleaved warm startup/UI pairs measured host startup marker p50/p95 43.037/44.100 ms (under the 150 ms target), wall 61.740/65.255 ms, first UI frame 57.993/59.942 ms, and first input 1.819/1.874 ms. The startup profile contained no workbench module; WB-04 has no entrypoint or startup import. Cold-cache conditions were not measured.",
+      "artifacts": [
+        "tests/bench_workspace_model.lua",
+        ".bench-output/startup/20260912T141409Z-baseline-703b0e/baseline.json"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "task": "WB-03",
+  "revision": "Workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a; WB-03 relevant dirty-tree diff SHA-256 1f1b456ce937933c178c5ef6dfcfe864d5e5181bfcf648bdef65c9f355a78cdd at docs/evidence/WB-03-explorer.diff. Host nvim-config HEAD 64dceb4df6ac4d3e9b571146101c00947c143b12. The Autoconf code used in the host and WB-02 tests is the dirty tree based on 5a87cf0b40b43705357db892a1b07a40d418363c recorded in WB-02 evidence.",
+  "environment": "macOS 26.4.1 arm64 Macmini9,1; Neovim current 0.12.4 (20 open cycles/layout) and minimum 0.11.7 (5 cycles/layout); Python 3.14.6, pynvim 0.6.0. Installed MiniFiles 0.18.0 from /nix/store/zcxj726i529m6gwr3dk1yp4jdnrvr163-vimplugin-mini.files-0.18.0; installed Lua source SHA-256 a68bdfe4ea2d158b823f8292ae022add9b2170d30a6eaf65c6d8b57d5bd1a80b. Neo-tree and Snacks were not installed.",
+  "summary": "Completed the bounded public-API MiniFiles docking and native-split projection experiment. MiniFiles is suitable as an optional file-edit/navigation action but cannot meet the persistent multi-branch sidebar need through its documented public API: the installed implementation uses editor-relative floats and its model exposes one parent-child branch at a time. A minimal native split retained both sibling branches and selection, with much lower open-to-frame time in this small prototype; those timing results are not feature-equivalent because MiniFiles enumerated/rendered directories while the split rendered a small static projection. Native splits remain the selected direction. The current UX contract requires an overlay/collapse below the width needed to reserve 60 editor columns; this remains an explicit WB-06 layout obligation, not something this feasibility prototype claims to implement.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "Review docs/PLAN.md#wb-03, docs/PROVIDERS.md, ADR-003, tests/experiments/wb03_explorer.py, and the installed MiniFiles v0.18.0 help/source; run git diff --check.",
+      "result": "WB-03 changes are limited to the workbench-owned experiment under tests/experiments/, its ADR-003 outcome, and task/evidence records. The harness owns and disposes its Neovim process, control/UI RPC sessions, UI thread, socket, temporary fixture and XDG directories; current and minimum runs report child_reaped=true and watchdog_fired=false. MiniFiles interaction used documented setup/open/get_explorer_state/set_branch/set_target_window/go_in/close APIs and public Neovim split/window/buffer APIs only. Private H.* source was inspected read-only only to verify the installed float implementation; no private API was called or patched. No production plugin, host config, runtime dependency or comparison plugin changed.",
+      "artifacts": [
+        "docs/evidence/WB-03-explorer.diff",
+        ".test-output/e2e/wb03-20260912T135307Z-750804/result.json",
+        ".test-output/e2e/wb03-20260912T135307Z-bb73df/result.json"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "Run .test-deps/venv/bin/python tests/experiments/wb03_explorer.py --nvim /etc/profiles/per-user/snowbear/bin/nvim --cycles 20 and repeat with --nvim .test-deps/neovim-0.11.7/bin/nvim --cycles 5.",
+      "result": "On both Neovim versions, MiniFiles public set_branch switched from alpha to beta without retaining both sibling branches, set_target_window plus the documented l mapping opened beta.py in the editor target, q closed the explorer and restored editor focus, and reopening restored the branch and cursor. The native split projection rendered both alpha/ and beta/, returned focus to the editor, restored its saved selection on reopen, and wiped its scratch projection buffer on close. These results justify retaining MiniFiles only as an optional action and using an owned native projection for persistent multi-branch exploration.",
+      "artifacts": [
+        ".test-output/e2e/wb03-20260912T135307Z-750804/result.json",
+        ".test-output/e2e/wb03-20260912T135307Z-bb73df/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": "Drive attached ext_linegrid UI through open, l/j/q input, close/reopen selection, and resize at 160x50, 120x35, 80x24 and 60x20 using tests/experiments/wb03_explorer.py.",
+      "result": "Rendered terminal grids and real Neovim windows were inspected at all four sizes. MiniFiles floated its windows over the editor, kept file-open focus in its float, returned focus on close, and all inspected float configs remained within the grid. The native split showed two sibling branches simultaneously, returned editor focus and retained cursor selection. The fixed 32-column split left 47 editor columns at 80x24 and 27 at 60x20, below the UX 60-column budget; ADR-003 records that the eventual layout must switch to a compact overlay at those sizes. This is a feasibility result with an explicit responsive-layout constraint, not acceptance of the fixed-width prototype as production UI.",
+      "artifacts": [
+        ".test-output/e2e/wb03-20260912T135307Z-750804/minifiles-60x20.txt",
+        ".test-output/e2e/wb03-20260912T135307Z-750804/native-split-two-branches.txt",
+        ".test-output/e2e/wb03-20260912T135307Z-750804/native-split-60x20.txt"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Run the current-host WB-03 experiment for 20 repeated cycles per layout against one generated fixture; run the minimum-version compatibility experiment for 5 cycles per layout.",
+      "result": "On Neovim 0.12.4, open-to-first-frame p50/p95 was 5.261/6.134 ms for MiniFiles and 0.540/1.152 ms for the minimal native split. On Neovim 0.11.7, five-cycle p50/p95 was 5.380/6.042 ms and 0.614/1.116 ms respectively. The same temporary fixture was used; the comparison is illustrative rather than feature-equivalent: MiniFiles enumerated and rendered filesystem directories while the native test projected a static two-branch list. Four-grid resize, reopen, focus and cleanup results are recorded alongside timings. Runs were warm; no cold-cache result is claimed.",
+      "artifacts": [
+        ".test-output/e2e/wb03-20260912T135307Z-750804/result.json",
+        ".test-output/e2e/wb03-20260912T135307Z-bb73df/result.json"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2088 @@
+diff --git a/lua/workbench/controllers/search.lua b/lua/workbench/controllers/search.lua
+new file mode 100644
+index 0000000..272e673
+--- /dev/null
++++ b/lua/workbench/controllers/search.lua
+@@ -0,0 +1,1111 @@
++local Scope = require("workbench.core.scope")
++local RootPolicy = require("workbench.core.root_policy")
++local Workspace = require("workbench.core.workspace")
++local UiSearch = require("workbench.ui.search")
++
++local M = { debounce_ms = 80, history_limit = 10, initial_page_size = UiSearch.page_size }
++local Controller = {}
++Controller.__index = Controller
++
++local function copy(value)
++  return vim.deepcopy(value)
++end
++
++local function current_editor_window(tab)
++  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tab)) do
++    if vim.api.nvim_win_is_valid(win) then
++      local config = vim.api.nvim_win_get_config(win)
++      local buf = vim.api.nvim_win_get_buf(win)
++      if config.relative == "" and vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].buftype == "" and not vim.b[buf].workbench_preview then
++        return win
++      end
++    end
++  end
++end
++
++local function capture_origin(tab)
++  local win = current_editor_window(tab)
++  if not win then return nil end
++  return {
++    win = win,
++    buf = vim.api.nvim_win_get_buf(win),
++    cursor = vim.api.nvim_win_get_cursor(win),
++    view = vim.api.nvim_win_call(win, vim.fn.winsaveview),
++    tab = tab,
++  }
++end
++
++local function scope_key(workspace, tab)
++  return workspace.id .. "\0" .. tostring(tab)
++end
++
++local function buffer_path(buffer)
++  if not vim.api.nvim_buf_is_valid(buffer) then return nil end
++  local path = vim.api.nvim_buf_get_name(buffer)
++  if path == "" then return nil end
++  local normalized = vim.fs.normalize(path)
++  return normalized:sub(1, 1) == "/" and normalized or nil
++end
++
++local function scope_contains(scope, path, root)
++  if scope.kind == "file" then return vim.fs.normalize(scope.path or "") == path end
++  if scope.kind == "folder" then return RootPolicy.contains(scope.path, path) end
++  return RootPolicy.contains(root, path)
++end
++
++local function modified_count(workspace, scope)
++  local root = workspace.roots[1].path
++  local count = 0
++  for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
++    if vim.api.nvim_buf_is_loaded(buffer) and vim.bo[buffer].modified then
++      local path = buffer_path(buffer)
++      if path and scope_contains(scope, path, root) then count = count + 1 end
++    end
++  end
++  return count
++end
++
++local function normalized_scope(scope, workspace)
++  scope = copy(scope or workspace.scope)
++  if scope.kind == "all_roots" then return { kind = "all_roots", explicit = true } end
++  if scope.kind == "folder" or scope.kind == "file" then
++    local path = scope.path or (scope.resource and scope.resource.path)
++    if type(path) ~= "string" then return nil, { code = "invalid_scope", message = scope.kind .. " scope requires a native path" } end
++    path = vim.fs.normalize(path)
++    local inside, err = RootPolicy.contains(workspace.roots[1].path, path)
++    if not inside then return nil, { code = "outside_root", message = err or "scope lies outside the selected workspace" } end
++    if scope.kind == "folder" then
++      local stat = (vim.uv or vim.loop).fs_lstat(path)
++      if not stat or stat.type ~= "directory" then return nil, { code = "invalid_scope", message = "folder scope must be an existing directory" } end
++    end
++    return { kind = scope.kind, explicit = true, path = path }
++  end
++  if scope.kind == "open_buffers" then return nil, { code = "open_buffers_unavailable", message = "open-buffer search is planned for WB-18; this controller searches disk contents" } end
++  return nil, { code = "invalid_scope", message = "search scope must be workspace, folder, current file, or open buffers" }
++end
++
++local function entry_query(entry)
++  return entry and entry.options and entry.options.query or ""
++end
++
++function M.new(deps)
++  deps = deps or {}
++  if type(deps.layout) ~= "table" or type(deps.layout.mount) ~= "function" then return nil, "Search controller requires a native layout manager" end
++  if type(deps.provider) ~= "table" or type(deps.provider.start) ~= "function" then return nil, "Search controller requires a structured search provider" end
++  if type(deps.store) ~= "table" or type(deps.store.create) ~= "function" or type(deps.store.page) ~= "function" then
++    return nil, "Search controller requires the shared bounded result store"
++  end
++  if type(deps.navigation) ~= "table" or type(deps.navigation.preview) ~= "function"
++    or type(deps.navigation.open) ~= "function" or type(deps.navigation.return_to_origin) ~= "function" then
++    return nil, "Search controller requires the preview/open/return navigation service"
++  end
++  if deps.actions ~= nil and type(deps.actions.register) ~= "function" then return nil, "actions must be a shared action registry" end
++
++  local self = setmetatable({
++    layout = deps.layout,
++    provider = deps.provider,
++    store = deps.store,
++    navigation = deps.navigation,
++    actions = deps.actions or require("workbench.core.actions").new(),
++    owns_actions = deps.actions == nil,
++    get_workspace = type(deps.get_workspace) == "function" and deps.get_workspace or function() return deps.workspace end,
++    update_policy = deps.update_policy,
++    input = type(deps.input) == "function" and deps.input or vim.ui.input,
++    select = type(deps.select) == "function" and deps.select or vim.ui.select,
++    notify = deps.notify,
++    debounce = math.max(0, math.min(300, tonumber(deps.debounce_ms) or M.debounce_ms)),
++    scope = Scope.new("workbench-search-controller"),
++    investigations = {},
++    active = {},
++    capabilities = {},
++    next_id = 0,
++    disposed = false,
++  }, Controller)
++
++  local palette, palette_err
++  if deps.palette then palette = deps.palette
++  else palette, palette_err = require("workbench.ui.palette").new({
++    layout = self.layout,
++    actions = self.actions,
++    context = function() return self:_action_context() end,
++    input = self.input,
++  })
++  end
++  if not palette then self.scope:dispose(); return nil, palette_err or "action palette could not be created" end
++  self.palette = palette
++  self.owns_palette = deps.palette == nil
++  self.palette.bindings = vim.tbl_extend("force", self.palette.bindings or {}, {
++    ["search.rerun"] = "Search: r",
++    ["search.cancel"] = "Search: x",
++    ["search.resume"] = "Search: u",
++    ["search.current_file"] = "Search: F",
++    ["search.toggle_literal"] = "Search: l",
++    ["search.toggle_word"] = "Search: w",
++    ["search.cycle_case"] = "Search: c",
++    ["search.toggle_hidden"] = "Search: H",
++    ["search.toggle_ignored"] = "Search: I",
++    ["search.palette"] = "Search: P",
++  })
++  local registered, register_err = self:_register_actions()
++  if not registered then self.scope:dispose(); return nil, register_err end
++  return self
++end
++
++function Controller:_capability(workspace)
++  local key = workspace.id .. "\0" .. tostring(workspace.generation)
++  local cached = self.capabilities[key]
++  if cached then return cached end
++  local capability = self.provider:capabilities({ workspace = workspace })
++  self.capabilities[key] = copy(capability)
++  return self.capabilities[key]
++end
++
++function Controller:_investigation(workspace, tab)
++  local key = scope_key(workspace, tab)
++  local investigation = self.investigations[key]
++  if not investigation then
++    self.next_id = self.next_id + 1
++    investigation = { key = key, id = "search-" .. self.next_id, workspace = copy(workspace), tab = tab, history = {}, current = nil, generation = 0 }
++    self.investigations[key] = investigation
++  else
++    investigation.workspace = copy(workspace)
++  end
++  return investigation
++end
++
++function Controller:_action_context(overrides)
++  local tab = vim.api.nvim_get_current_tabpage()
++  local active = self.active[tab]
++  local workspace = overrides and overrides.workspace or (active and active.investigation.workspace) or self.get_workspace()
++  local current_file
++  local win = current_editor_window(tab)
++  if win then current_file = buffer_path(vim.api.nvim_win_get_buf(win)) end
++  return vim.tbl_extend("force", {
++    controller = self,
++    actions = self.actions,
++    workspace = workspace,
++    search = active,
++    path = overrides and overrides.path,
++    current_file = current_file,
++    capability = workspace and self:_capability(workspace) or nil,
++  }, overrides or {})
++end
++
++function Controller:_register(action)
++  return self.actions:register(action, { scope = self.scope })
++end
++
++function Controller:_register_actions()
++  local controller = self
++  local actions = {
++    {
++      id = "search.workspace", title = "Search workspace", category = "Search", scope = "workspace",
++      available = function(ctx)
++        local ready = type(ctx.workspace) == "table" and ctx.capability and ctx.capability.state == "ready"
++        return { enabled = ready == true, reason = ctx.capability and ctx.capability.reason or "no workspace is active", code = ctx.capability and ctx.capability.state }
++      end,
++      run = function(ctx) return controller:open({ workspace = ctx.workspace, query = "" }) end,
++    },
++    {
++      id = "search.in_folder", title = "Search in folder", category = "Search", scope = "item",
++      available = function(ctx)
++        local ready = type(ctx.workspace) == "table" and type(ctx.path) == "string" and ctx.capability and ctx.capability.state == "ready"
++        return { enabled = ready == true, reason = type(ctx.path) ~= "string" and "select a folder in Files first" or ctx.capability and ctx.capability.reason or "workspace is unavailable" }
++      end,
++      run = function(ctx) return controller:search_in_folder(ctx.workspace, ctx.path) end,
++    },
++    {
++      id = "search.current_file", title = "Search current file", category = "Search", scope = "buffer",
++      available = function(ctx)
++        local ready = type(ctx.workspace) == "table" and ctx.workspace.roots and #ctx.workspace.roots == 1
++          and type(ctx.current_file) == "string" and ctx.capability and ctx.capability.state == "ready"
++        return { enabled = ready == true, reason = type(ctx.current_file) ~= "string" and "no named editor file is active" or ctx.capability and ctx.capability.reason or "workspace is unavailable" }
++      end,
++      run = function(ctx) return controller:search_current_file(ctx.workspace, ctx.current_file) end,
++    },
++    {
++      id = "search.open_buffers", title = "Search open buffers", category = "Search", scope = "workspace",
++      available = function() return { enabled = false, code = "planned", reason = "WB-18: open-buffer and unsaved-content search is not implemented" } end,
++      run = function() return nil end,
++    },
++    {
++      id = "search.rerun", title = "Rerun current search", category = "Search", scope = "view",
++      available = function(ctx) return { enabled = ctx.search ~= nil and ctx.search.investigation.current ~= nil, reason = "there is no retained search to rerun" } end,
++      run = function(ctx) return controller:rerun(ctx.search) end,
++    },
++    {
++      id = "search.cancel", title = "Cancel current search", category = "Search", scope = "view",
++      available = function(ctx) return { enabled = ctx.search ~= nil and ctx.search.request ~= nil, reason = "there is no active search" } end,
++      run = function(ctx) return controller:cancel(ctx.search) end,
++    },
++    {
++      id = "search.resume", title = "Resume a retained search", category = "Search", scope = "view",
++      available = function(ctx) return { enabled = ctx.search ~= nil and #ctx.search.investigation.history > 0, reason = "there is no retained search history" } end,
++      run = function(ctx) return controller:prompt_resume(ctx.search) end,
++    },
++    {
++      id = "search.toggle_literal", title = "Toggle literal/regex matching", category = "Search Flags", scope = "view",
++      available = function(ctx) return { enabled = ctx.search ~= nil, reason = "open a Search view first" } end,
++      checked = function(ctx) return ctx.search and ctx.search.flags.fixed or false end,
++      run = function(ctx) return controller:toggle_flag(ctx.search, "fixed") end,
++    },
++    {
++      id = "search.toggle_word", title = "Toggle whole-word matching", category = "Search Flags", scope = "view",
++      available = function(ctx) return { enabled = ctx.search ~= nil, reason = "open a Search view first" } end,
++      checked = function(ctx) return ctx.search and ctx.search.flags.word or false end,
++      run = function(ctx) return controller:toggle_flag(ctx.search, "word") end,
++    },
++    {
++      id = "search.cycle_case", title = "Cycle case matching", category = "Search Flags", scope = "view",
++      available = function(ctx) return { enabled = ctx.search ~= nil, reason = "open a Search view first" } end,
++      run = function(ctx) return controller:cycle_case(ctx.search) end,
++    },
++    {
++      id = "search.toggle_hidden", title = "Toggle hidden files", category = "Search Policy", scope = "workspace",
++      available = function(ctx) return { enabled = type(ctx.workspace) == "table" and ctx.search ~= nil, reason = ctx.search and "no workspace is active" or "open a Search view first" } end,
++      checked = function(ctx) return ctx.workspace and ctx.workspace.policy.hidden == "include" or false end,
++      run = function(ctx) return controller:toggle_policy(ctx.search, "hidden") end,
++    },
++    {
++      id = "search.toggle_ignored", title = "Toggle ignored files", category = "Search Policy", scope = "workspace",
++      available = function(ctx)
++        if not ctx.workspace or not ctx.search then return { enabled = false, reason = "open a Search view first" } end
++        if ctx.search and ctx.search.scope.kind == "file" then
++          return { enabled = false, code = "explicit_file_scope", reason = "an explicitly targeted current file follows ripgrep direct-file semantics; the ignored toggle does not change it" }
++        end
++        return { enabled = true }
++      end,
++      checked = function(ctx) return ctx.workspace and ctx.workspace.policy.ignored == "include" or false end,
++      run = function(ctx) return controller:toggle_policy(ctx.search, "ignored") end,
++    },
++    {
++      id = "search.palette", title = "Open action palette", category = "Workbench", scope = "global",
++      available = function() return { enabled = controller.palette ~= nil, reason = "action palette is unavailable" } end,
++      run = function(ctx) return controller.palette and controller.palette:open({ context = ctx }) end,
++    },
++  }
++  for _, action in ipairs(actions) do
++    local handle, err = self:_register(action)
++    if not handle then self.registration_error = err; return nil, err end
++  end
++  return true
++end
++
++function Controller:_action_result(id, active, args)
++  local result = self.actions:execute(id, self:_action_context({
++    workspace = active and active.investigation.workspace or self.get_workspace(),
++    search = active,
++    path = args and args.path,
++    ui = active and active.view,
++  }), args or {})
++  if not result.ok and active and not active.closed then
++    active.notice = { id = id, label = "Action unavailable: " .. tostring(result.error.message), detail = result.error.code }
++    self:_render(active)
++  end
++  return result
++end
++
++function Controller:_new_ui(investigation, opts)
++  local child, child_err = self.scope:child("view:" .. investigation.id .. ":" .. tostring(investigation.tab))
++  if not child then return nil, child_err end
++  local active = {
++    investigation = investigation,
++    tab = investigation.tab,
++    scope_owner = child,
++    view = nil,
++    preview = nil,
++    request = nil,
++    request_scope = nil,
++    timer_scope = nil,
++    render_ticket = nil,
++    query = opts.query or (investigation.current and entry_query(investigation.current)) or "",
++    flags = copy(opts.flags or (investigation.current and investigation.current.options.flags) or { fixed = true, case = "smart", word = false }),
++    scope = assert(normalized_scope(opts.scope or (investigation.current and investigation.current.options.scope) or investigation.workspace.scope, investigation.workspace)),
++    visible_limit = investigation.current and investigation.current.view_state and investigation.current.view_state.visible_limit or UiSearch.page_size,
++    offset = investigation.current and investigation.current.view_state and investigation.current.view_state.offset or 0,
++    expanded = investigation.current and investigation.current.view_state and copy(investigation.current.view_state.expanded) or {},
++    phase = investigation.current and "Resumed" or "Ready",
++    notice = nil,
++    modified_count = 0,
++    origin = capture_origin(investigation.tab),
++    selected_id = investigation.current and investigation.current.view_state and investigation.current.view_state.selected_id
++      or (investigation.current and investigation.current.store_session.selected_id) or nil,
++    closed = false,
++  }
++  local existing = self.active[active.tab]
++  if existing and not existing.closed then
++    child:dispose()
++    return nil, { code = "search_view_open", message = "a Search view is already open in this tab" }
++  end
++  self.active[active.tab] = active
++  child:defer(function() self:_dispose_ui(active) end, "search-ui:" .. investigation.id, "session")
++
++  if self.navigation then
++    local preview, preview_err = require("workbench.ui.preview").new({ navigation = self.navigation, session_id = investigation.id })
++    if not preview then child:dispose(); return nil, preview_err end
++    active.preview = preview
++    child:defer(function() preview:dispose() end, "search-preview:" .. investigation.id, "view")
++  end
++
++  local help = UiSearch.help_lines(self.actions:list(self:_action_context({ workspace = investigation.workspace, search = active })))
++  local view, mount_err = self.layout:mount({
++    id = "workbench-search",
++    title = "Search",
++    kind = "tree",
++    placement = "results",
++    focus = opts.focus ~= false,
++    model = { status = "ready", items = {} },
++    help_lines = help,
++    keymaps = self:_keymaps(active),
++    on_select = function(id, row, committed) return self:_select(active, id, row, committed) end,
++    on_toggle = function(id, expanded) return self:_toggle_group(active, id, expanded) end,
++    on_dispose = function()
++      self:_dispose_ui(active)
++      child:dispose()
++    end,
++  })
++  if not view then
++    active.closed = true
++    self.active[active.tab] = nil
++    child:dispose()
++    return nil, mount_err
++  end
++  active.view = view
++
++  local entry = investigation.current
++  if entry and entry.store_session then
++    local resumed, resume_err = self.store:resume(entry.store_session.id)
++    if not resumed then
++      active.notice = { id = "resume-error", label = "Previous search is unavailable", detail = resume_err }
++      investigation.current = nil
++      entry = nil
++    else
++      entry.store_session = resumed
++      active.query = entry_query(entry)
++      active.flags = copy(entry.options.flags)
++      active.scope = copy(entry.options.scope)
++      active.phase = self:_phase_for(entry)
++    end
++  end
++  if entry and active.selected_id then entry.store_session:select(active.selected_id) end
++  self:_render(active, true)
++  if opts.query and opts.query ~= "" and (not entry or opts.query ~= entry_query(entry)) then self:set_query(active, opts.query) end
++  return view
++end
++
++function Controller:open(opts)
++  opts = opts or {}
++  if self.disposed then return nil, { code = "disposed", message = "Search controller is disposed" } end
++  local workspace = opts.workspace or self.get_workspace()
++  if type(workspace) ~= "table" then return nil, { code = "workspace_unavailable", message = "an explicit workspace snapshot is required" } end
++  local capability = self:_capability(workspace)
++  if capability.state == "unsupported" then
++    return nil, { code = capability.reason or "search_unsupported", message = capability.reason or "search is unsupported for this workspace" }
++  end
++  local tab = opts.tab or vim.api.nvim_get_current_tabpage()
++  local investigation = self:_investigation(workspace, tab)
++  if self.active[tab] and not self.active[tab].closed then return self.active[tab].view end
++  local normalized, scope_err = normalized_scope(opts.scope or (investigation.current and investigation.current.options.scope) or workspace.scope, workspace)
++  if not normalized then return nil, scope_err end
++  opts.scope = normalized
++  local view, err = self:_new_ui(investigation, opts)
++  if not view then return nil, err end
++  return view
++end
++
++function Controller:search_in_folder(workspace, path, opts)
++  if type(workspace) ~= "table" or type(path) ~= "string" then return nil, { code = "invalid_scope", message = "folder search requires a workspace snapshot and path" } end
++  return self:open(vim.tbl_extend("force", opts or {}, { workspace = workspace, scope = { kind = "folder", explicit = true, path = path } }))
++end
++
++function Controller:search_current_file(workspace, path, opts)
++  workspace = workspace or self.get_workspace()
++  if type(workspace) ~= "table" then return nil, { code = "workspace_unavailable", message = "an explicit workspace snapshot is required" } end
++  if not path then
++    local win = current_editor_window(vim.api.nvim_get_current_tabpage())
++    if not win then return nil, { code = "file_unavailable", message = "no named editor file is active" } end
++    path = buffer_path(vim.api.nvim_win_get_buf(win))
++  end
++  if not path then return nil, { code = "file_unavailable", message = "current buffer has no native file path" } end
++  return self:open(vim.tbl_extend("force", opts or {}, { workspace = workspace, scope = { kind = "file", explicit = true, path = path } }))
++end
++
++function Controller:_keymaps(active)
++  return {
++    ["/"] = { desc = "Set search query", run = function() self:_prompt_query(active) end },
++    r = { desc = "Rerun search", run = function() self:rerun(active) end },
++    x = { desc = "Cancel search", run = function() self:cancel(active) end },
++    p = { desc = "Preview selected match", run = function() self:preview_selected(active) end },
++    o = { desc = "Open selected match in a split", run = function() self:open_selected(active) end },
++    R = { desc = "Return to the search origin", run = function() self:return_to_origin(active) end },
++    a = { desc = "Load the next result page", run = function() self:load_more(active) end },
++    z = { desc = "Load the previous result page", run = function() self:load_previous(active) end },
++    l = { desc = "Toggle literal/regex", run = function() self:toggle_flag(active, "fixed") end },
++    c = { desc = "Cycle case mode", run = function() self:cycle_case(active) end },
++    w = { desc = "Toggle whole-word matches", run = function() self:toggle_flag(active, "word") end },
++    H = { desc = "Toggle hidden files", run = function() self:toggle_policy(active, "hidden") end },
++    I = { desc = "Toggle ignored files", run = function() self:toggle_policy(active, "ignored") end },
++    s = { desc = "Set folder scope", run = function() self:_prompt_folder(active) end },
++    F = { desc = "Search current file", run = function() self:_current_file_scope(active) end },
++    B = { desc = "Open-buffer search capability", run = function() self:_unavailable(active, "open-buffer search is planned for WB-18; current search reads disk contents") end },
++    u = { desc = "Resume a retained search", run = function() self:prompt_resume(active) end },
++    ["+"] = { desc = "Add include glob", run = function() self:_prompt_glob(active, "include") end },
++    ["-"] = { desc = "Add exclude glob", run = function() self:_prompt_glob(active, "exclude") end },
++    P = { desc = "Open action palette", run = function() if self.palette then self.palette:open({ context = self:_action_context({ workspace = active.investigation.workspace, search = active }) }) end end },
++    h = nil,
++  }
++end
++
++function Controller:_phase_for(entry)
++  if not entry then return "Ready" end
++  local summary = self.store:summary(entry.result_id)
++  if not summary then return "History unavailable" end
++  if summary.status == "running" then return "Searching" end
++  if summary.status == "complete" then return "Complete" end
++  if summary.status == "partial" then return "Partial" end
++  if summary.status == "cancelled" then return "Cancelled" end
++  return "Error"
++end
++
++function Controller:_message(active, label, detail, id)
++  active.notice = label and { id = id or "state", label = label, detail = detail } or nil
++  return self:_render(active)
++end
++
++function Controller:_model(active)
++  local investigation = active.investigation
++  local entry = investigation.current
++  local matching = entry and vim.deep_equal(entry.options, { query = active.query, flags = active.flags, scope = active.scope })
++  local page, summary
++  if matching and entry.result_id then
++    summary = self.store:summary(entry.result_id)
++    if summary then page = self.store:page(entry.result_id, active.offset or 0, active.visible_limit) end
++  end
++  local stale = entry and not matching and entry.result_id and self.store:summary(entry.result_id)
++  if stale then
++    summary = stale
++    page = self.store:page(entry.result_id, active.offset or 0, active.visible_limit)
++  end
++  active.total = summary and summary.item_count or 0
++  active.completeness = summary and summary.completeness or nil
++  local notice = active.notice
++  if not notice and stale then
++    notice = { id = "previous", label = "Previous query results (not current)", detail = "Press / to continue or r to rerun the visible query" }
++  elseif not notice and not entry and active.query == "" then
++    notice = { id = "ready", label = "Enter / to search the selected scope", detail = "Literal search; disk contents only" }
++  elseif not notice and active.query == "" then
++    notice = { id = "empty", label = "Empty query · no repository scan was started", detail = "Type a query with /" }
++  elseif not notice and summary and summary.status == "error" then
++    notice = { id = "error", label = "Search failed", detail = summary.error and summary.error.message or "search provider failed" }
++  elseif not notice and summary and summary.status == "partial" then
++    notice = { id = "partial", label = "Partial results", detail = summary.error and summary.error.message or "provider reached a configured cap" }
++  elseif not notice and summary and summary.status == "cancelled" then
++    notice = { id = "cancelled", label = "Search cancelled; received results are retained", detail = "Press r to rerun" }
++  elseif not notice and summary and summary.status == "complete" and summary.item_count == 0 then
++    notice = { id = "empty-results", label = "No matches", detail = "Search completed successfully" }
++  elseif not notice and summary and summary.status == "running" and summary.item_count == 0 then
++    notice = { id = "running", label = "Searching…", detail = "Results stream in while this panel remains interactive" }
++  elseif not notice and active.phase == "Debouncing" and not matching then
++    notice = { id = "debounce", label = "Waiting for query debounce", detail = "Previous results are labelled as stale" }
++  end
++  local items, expanded, projection
++  local projected_notice = notice
++  if page and #page.items > 0 and notice then projected_notice = nil end
++  if page then items, expanded, projection = UiSearch.project(page, { notice = projected_notice })
++  else items, expanded, projection = UiSearch.project({ items = {} }, { notice = projected_notice }) end
++  active.projection = projection
++  active.expanded = active.expanded or {}
++  for id in pairs(expanded) do if active.expanded[id] == nil then active.expanded[id] = true end end
++  local state = {
++    workspace = investigation.workspace,
++    scope = active.scope,
++    query = active.query,
++    flags = active.flags,
++    phase = active.phase,
++    total = active.total,
++    completeness = active.completeness,
++    visible_limit = active.visible_limit,
++    offset = projection and projection.offset or 0,
++    visible_matches = projection and projection.visible_matches or 0,
++    modified_count = active.modified_count,
++    policy_override = active.scope.kind == "file" and investigation.workspace.policy.ignored == "exclude",
++  }
++  local header = UiSearch.header(state)
++  if page and #page.items > 0 and notice then
++    local detail = notice.detail and notice.detail ~= "" and (" · " .. notice.detail) or ""
++    header[4] = UiSearch.compact((header[4] or "") .. " · " .. tostring(notice.label or "Search state") .. detail, 240)
++  end
++  return { status = "ready", title = UiSearch.title(state), header = header, items = items }, expanded
++end
++
++function Controller:_render(active, immediate)
++  if self.disposed or active.closed or not active.scope_owner.alive or not active.view or active.view.closed then return false end
++  if immediate and active.render_ticket and active.render_ticket.active then
++    active.render_ticket:cancel()
++    active.render_ticket = nil
++  elseif active.render_ticket and active.render_ticket.active then
++    return true
++  end
++  local function render()
++    active.render_ticket = nil
++    if self.disposed or active.closed or not active.scope_owner.alive or not active.view or active.view.closed then return false end
++    local model, expanded = self:_model(active)
++    for id in pairs(expanded) do
++      if active.expanded[id] == nil then active.expanded[id] = true end
++      active.view.expanded[id] = active.expanded[id] ~= false
++    end
++    if active.selected_id then active.view.selected_id = active.selected_id end
++    active.view:update(model)
++    if not active.selected_id or not active.view.row_index[active.selected_id] then
++      active.selected_id = nil
++      for _, row in ipairs(active.view.rows) do
++        if row.kind == "match" then active.selected_id = row.id; active.view.selected_id = row.id; break end
++      end
++      if active.selected_id then
++        local entry = active.investigation.current
++        if entry and entry.store_session then
++          entry.store_session:select(active.selected_id)
++          entry.view_state = entry.view_state or {}
++          entry.view_state.selected_id = active.selected_id
++        end
++        self:preview_selected(active)
++      end
++    end
++    return true
++  end
++  if immediate then return render() end
++  local ticket = active.scope_owner:schedule(render)
++  if ticket then active.render_ticket = ticket end
++  return ticket ~= nil
++end
++
++function Controller:_entry_for_item(active, item_id)
++  local entry = active.investigation.current
++  if not entry or not entry.result_id then return nil end
++  return self.store:item(entry.result_id, item_id), entry
++end
++
++function Controller:_select(active, id, row, committed)
++  if active.closed or not id then return nil end
++  if type(row) == "table" and row.kind == "file" then return true end
++  local item, entry = self:_entry_for_item(active, id)
++  if not item or not entry then return nil end
++  active.selected_id = id
++  entry.store_session:select(id)
++  entry.view_state = entry.view_state or {}
++  entry.view_state.selected_id = id
++  if committed then return self:open_selected(active) end
++  return self:preview_selected(active)
++end
++
++function Controller:_toggle_group(active, id, expanded)
++  local entry = active.investigation.current
++  if entry and entry.store_session then entry.store_session:set_expanded(id, expanded) end
++  active.expanded = active.expanded or {}
++  active.expanded[id] = expanded and true or false
++  if entry then
++    entry.view_state = entry.view_state or {}
++    entry.view_state.expanded = copy(active.expanded)
++  end
++  return true
++end
++
++function Controller:preview_selected(active)
++  if not active or not active.preview or not self.navigation or not active.selected_id then return false end
++  local item, entry = self:_entry_for_item(active, active.selected_id)
++  if not item or not item.location or not entry then return false end
++  entry.store_session:preview(item.id)
++  local restore_search_focus = active.view and active.view.window and vim.api.nvim_win_is_valid(active.view.window)
++    and vim.api.nvim_get_current_win() == active.view.window
++  local request, err = active.preview:preview(item.location, entry.navigation_id, function(result)
++    if active.closed or not active.scope_owner.alive or active.investigation.current ~= entry then return end
++    if type(result) == "table" and result.code then
++      active.notice = { id = "preview-error", label = "Preview unavailable", detail = result.message or result.code }
++      self:_render(active)
++    end
++    if restore_search_focus and active.view.window and vim.api.nvim_win_is_valid(active.view.window) then
++      pcall(vim.api.nvim_set_current_win, active.view.window)
++    end
++  end)
++  if restore_search_focus and active.view.window and vim.api.nvim_win_is_valid(active.view.window) then
++    pcall(vim.api.nvim_set_current_win, active.view.window)
++  end
++  return request, err
++end
++
++function Controller:open_selected(active)
++  if not active or active.closed or not self.navigation or not active.selected_id then return nil, { code = "selection_unavailable", message = "select a match first" } end
++  local item, entry = self:_entry_for_item(active, active.selected_id)
++  if not item or not item.location or not entry then return nil, { code = "selection_unavailable", message = "selected result is not a navigable match" } end
++  local opened, err = self.navigation:open(item.location, "split", active.origin, entry.navigation_id)
++  if not opened then
++    active.notice = { id = "open-error", label = "Could not open result", detail = type(err) == "table" and err.message or err }
++    self:_render(active)
++    return nil, err
++  end
++  return opened
++end
++
++function Controller:return_to_origin(active)
++  if not self.navigation then return nil, { code = "navigation_unavailable", message = "navigation service is unavailable" } end
++  local entry = active and active.investigation.current
++  if not entry then return nil, { code = "history_unavailable", message = "there is no active search investigation" } end
++  local restored, err = self.navigation:return_to_origin(entry.navigation_id)
++  if not restored then
++    active.notice = { id = "return-error", label = "Could not return to search origin", detail = err.message or err.code }
++    self:_render(active)
++  end
++  return restored, err
++end
++
++function Controller:load_more(active)
++  if not active or active.closed then return false end
++  local entry = active.investigation.current
++  if not entry then return false end
++  local page = self.store:page(entry.result_id, active.offset or 0, active.visible_limit)
++  if not page or not page.next_offset then return false end
++  if active.visible_limit < UiSearch.max_page_size then
++    active.visible_limit = math.min(UiSearch.max_page_size, active.visible_limit + UiSearch.page_size)
++  else
++    active.offset = page.next_offset
++    active.visible_limit = UiSearch.page_size
++  end
++  active.selected_id = nil
++  entry.view_state = { offset = active.offset or 0, visible_limit = active.visible_limit, expanded = copy(active.expanded or {}) }
++  active.notice = nil
++  return self:_render(active)
++end
++
++function Controller:load_previous(active)
++  if not active or active.closed or not active.offset or active.offset == 0 then return false end
++  active.offset = math.max(0, active.offset - UiSearch.page_size)
++  active.selected_id = nil
++  local entry = active.investigation.current
++  if entry then entry.view_state = { offset = active.offset, visible_limit = active.visible_limit, expanded = copy(active.expanded or {}) } end
++  active.notice = nil
++  return self:_render(active)
++end
++
++function Controller:_cancel_timer(active)
++  if active.timer_scope then active.timer_scope:dispose(); active.timer_scope = nil end
++end
++
++function Controller:_cancel_request(active, reason)
++  local scope = active.request_scope
++  active.request_scope, active.request = nil, nil
++  if scope then
++    if scope.alive and active.investigation.current then
++      local entry = active.investigation.current
++      local summary = entry.result_id and self.store:summary(entry.result_id)
++      if summary and summary.status == "running" then
++        self.store:finish(entry.result_id, "cancelled", "unknown", { code = "cancelled", message = reason or "search cancelled" })
++      end
++    end
++    scope:dispose()
++  end
++end
++
++function Controller:_ensure_entry(active)
++  local investigation = active.investigation
++  local options = { query = active.query, flags = copy(active.flags), scope = copy(active.scope) }
++  investigation.generation = investigation.generation + 1
++  self.next_id = self.next_id + 1
++  local id = "rg-" .. self.next_id
++  local query = { query = options.query, flags = options.flags, scope = options.scope, policy = copy(investigation.workspace.policy) }
++  local created, create_err = self.store:create({
++    id = id,
++    provider_id = "rg",
++    workspace_id = investigation.workspace.id,
++    generation = investigation.generation,
++    query = query,
++    status = "running",
++    completeness = "unknown",
++  })
++  if not created then return nil, { code = "result_store_full", message = tostring(create_err) } end
++  local store_session, session_err = self.store:open_session(id, { id = id .. ":view", origin = { investigation = investigation.id } })
++  if not store_session then return nil, { code = "result_session_full", message = tostring(session_err) } end
++  local entry = {
++    id = id,
++    result_id = id,
++    store_session = store_session,
++    options = options,
++    navigation_id = investigation.id .. ":" .. tostring(investigation.generation),
++    status = "running",
++    error = nil,
++    view_state = { offset = 0, visible_limit = UiSearch.page_size, expanded = {} },
++  }
++  if investigation.current and investigation.current.store_session then investigation.current.store_session:close() end
++  investigation.history[#investigation.history + 1] = entry
++  while #investigation.history > M.history_limit do
++    local old = table.remove(investigation.history, 1)
++    if old.store_session then old.store_session:dispose() end
++  end
++  investigation.current = entry
++  active.selected_id = nil
++  active.visible_limit = UiSearch.page_size
++  active.offset = 0
++    active.offset = 0
++  return entry
++end
++
++function Controller:_terminal(active, entry, status, completeness, err)
++  local done, finish_err = self.store:finish(entry.result_id, status, completeness, err)
++  if not done then
++    active.notice = { id = "store-error", label = "Could not retain search status", detail = tostring(finish_err) }
++  else
++    entry.status, entry.error = status, err
++    active.phase = status == "complete" and "Complete" or status == "partial" and "Partial" or status == "cancelled" and "Cancelled" or "Error"
++    active.notice = nil
++  end
++  if active.request_scope then active.request_scope:dispose(); active.request_scope = nil end
++  active.request = nil
++  self:_render(active)
++end
++
++function Controller:_start_search(active, generation)
++  if active.closed or not active.scope_owner.alive or generation ~= active.query_generation then return false end
++  self:_cancel_timer(active)
++  local query = active.query
++  if query == "" then
++    active.phase = "Empty"
++    active.notice = { id = "empty", label = "Empty query · no repository scan was started", detail = "Type a query with /" }
++    self:_render(active)
++    return true
++  end
++  local workspace = active.investigation.workspace
++  local capability = self:_capability(workspace)
++  if capability.state ~= "ready" then
++    active.phase = "Unavailable"
++    active.notice = { id = "unavailable", label = "Search unavailable", detail = capability.reason or capability.state }
++    self:_render(active)
++    return false
++  end
++  local entry, entry_err = self:_ensure_entry(active)
++  if not entry then
++    active.phase = "Error"
++    active.notice = { id = "history", label = "Search could not start", detail = entry_err.message }
++    self:_render(active)
++    return false
++  end
++  active.modified_count = modified_count(workspace, active.scope)
++  active.phase = "Searching"
++  active.notice = nil
++  self:_render(active)
++  local child, child_err = active.scope_owner:child("request:" .. entry.id)
++  if not child then
++    self:_terminal(active, entry, "error", "unknown", { code = "scope_error", message = tostring(child_err) })
++    return false
++  end
++  active.request_scope = child
++  local result_generation = entry.options and active.investigation.generation or 1
++  local function sink(event)
++    if active.closed or not active.scope_owner.alive or generation ~= active.query_generation
++      or active.investigation.current ~= entry or event.generation ~= result_generation then return end
++    if event.kind == "status" then
++      if event.status == "running" then active.phase = "Searching" end
++      if event.status == "partial" then active.phase = "Partial" end
++      if event.status == "cancelled" then
++        self:_terminal(active, entry, "cancelled", "unknown", { code = "cancelled", message = event.reason or "search cancelled" })
++        return
++      end
++      self:_render(active)
++    elseif event.kind == "batch" then
++      local merged, merge_err = self.store:merge(entry.result_id, event.items)
++      if not merged then
++        self:_terminal(active, entry, "error", "unknown", { code = "result_merge_failed", message = tostring(merge_err) })
++        return
++      end
++      self:_render(active)
++    elseif event.kind == "done" then
++      if event.status == "partial" then
++        self:_terminal(active, entry, "partial", "truncated", { code = event.limit_reason or "result_limit", message = "Search reached a configured result cap" })
++      else
++        self:_terminal(active, entry, "complete", "complete")
++      end
++    elseif event.kind == "error" then
++      local status = event.status == "partial" and "partial" or "error"
++      self:_terminal(active, entry, status, status == "partial" and "reported-only" or "unknown", event.error or { code = "rg_failed", message = "ripgrep failed" })
++    end
++  end
++  local request, start_err = self.provider:start({
++    workspace = workspace,
++    query = query,
++    flags = copy(active.flags),
++    scope = copy(active.scope),
++    generation = result_generation,
++    session_id = entry.id,
++  }, sink)
++  if not request then
++    self:_terminal(active, entry, "error", "unknown", start_err or { code = "start_failed", message = "search provider could not start" })
++    return false
++  end
++  if active.scope_owner.alive and active.investigation.current == entry and generation == active.query_generation then
++    active.request = request
++    child:defer(function() request:cancel("search view closed or query superseded") end, "request-handle:" .. entry.id, "process")
++  else
++    request:cancel("search became stale before process ownership completed")
++  end
++  return true
++end
++
++function Controller:set_query(active, query, immediate)
++  if not active or active.closed then return nil, { code = "view_closed", message = "Search view is closed" } end
++  if type(query) ~= "string" or query:find("\0", 1, true) then return nil, { code = "invalid_query", message = "query must be a string without NUL bytes" } end
++  active.query_generation = (active.query_generation or 0) + 1
++  local generation = active.query_generation
++  self:_cancel_timer(active)
++  self:_cancel_request(active, "query changed")
++  active.query = query
++  active.notice = nil
++  if query == "" then
++    active.phase = "Empty"
++    self:_render(active)
++    return true
++  end
++  if immediate or self.debounce == 0 then
++    active.phase = "Searching"
++    return self:_start_search(active, generation)
++  end
++  active.phase = "Debouncing"
++  local child, child_err = active.scope_owner:child("debounce:" .. generation)
++  if not child then return nil, child_err end
++  active.timer_scope = child
++  local uv = vim.uv or vim.loop
++  local timer = uv.new_timer()
++  if not timer then child:dispose(); active.timer_scope = nil; return nil, { code = "timer_unavailable", message = "query debounce timer could not be allocated" } end
++  child:defer(function() timer:stop(); timer:close() end, "search-debounce-timer", "timer")
++  timer:start(self.debounce, 0, function()
++    if not child.alive then return end
++    active.scope_owner:schedule(function() self:_start_search(active, generation) end)
++  end)
++  self:_render(active)
++  return true
++end
++
++function Controller:_prompt_query(active)
++  self.input({ prompt = "Search " .. (active.scope.kind == "folder" and "folder" or active.scope.kind == "file" and "current file" or "workspace") .. ": ", default = active.query }, function(value)
++    if value ~= nil and not active.closed and active.scope_owner.alive then self:set_query(active, value) end
++  end)
++end
++
++function Controller:rerun(active)
++  if not active or active.closed then return nil, { code = "view_closed", message = "Search view is closed" } end
++  local query = active.query
++  if query == "" and active.investigation.current then query = entry_query(active.investigation.current) end
++  return self:set_query(active, query, true)
++end
++
++function Controller:cancel(active)
++  if not active or active.closed then return false end
++  active.query_generation = (active.query_generation or 0) + 1
++  self:_cancel_timer(active)
++  self:_cancel_request(active, "cancelled by user")
++  active.phase = "Cancelled"
++  active.notice = { id = "cancelled", label = "Search cancelled; received results are retained", detail = "Press r to rerun" }
++  return self:_render(active)
++end
++
++function Controller:toggle_flag(active, flag)
++  if not active or active.closed then return false end
++  active.flags[flag] = not active.flags[flag]
++  return self:set_query(active, active.query, true)
++end
++
++function Controller:cycle_case(active)
++  if not active or active.closed then return false end
++  active.flags.case = active.flags.case == "smart" and "sensitive" or active.flags.case == "sensitive" and "insensitive" or "smart"
++  return self:set_query(active, active.query, true)
++end
++
++function Controller:_snapshot_with_policy(active, key, value)
++  local old = active.investigation.workspace
++  local fields = copy(old)
++  fields.generation = fields.generation + 1
++  fields.policy[key] = value
++  local next_workspace, err
++  if self.update_policy then next_workspace, err = self.update_policy(old, { [key] = value })
++  else next_workspace, err = Workspace.new(fields) end
++  if not next_workspace then return nil, { code = "policy_update_failed", message = tostring(err) } end
++  active.investigation.workspace = copy(next_workspace)
++  self.capabilities[next_workspace.id .. "\0" .. tostring(next_workspace.generation)] = self.provider:capabilities({ workspace = next_workspace })
++  return next_workspace
++end
++
++function Controller:toggle_policy(active, key)
++  if not active or active.closed then return false end
++  if key ~= "hidden" and key ~= "ignored" then return nil, { code = "invalid_policy", message = "only hidden and ignored policy can be toggled" } end
++  if key == "ignored" and active.scope.kind == "file" then
++    self:_unavailable(active, "an explicitly targeted current file follows ripgrep direct-file semantics; ignored policy does not change it")
++    return false
++  end
++  local current = active.investigation.workspace.policy[key] or "exclude"
++  local _, err = self:_snapshot_with_policy(active, key, current == "include" and "exclude" or "include")
++  if err then active.notice = { id = "policy-error", label = "Search policy could not be updated", detail = err.message }; self:_render(active); return nil, err end
++  return self:set_query(active, active.query, true)
++end
++
++function Controller:set_scope(active, scope)
++  if not active or active.closed then return false end
++  local normalized, err = normalized_scope(scope, active.investigation.workspace)
++  if not normalized then active.notice = { id = err.code, label = "Scope unavailable", detail = err.message }; self:_render(active); return nil, err end
++  active.scope = normalized
++  active.selected_id = nil
++  return self:set_query(active, active.query, true)
++end
++
++function Controller:_prompt_folder(active)
++  self.input({ prompt = "Search folder (absolute path): ", default = active.scope.kind == "folder" and active.scope.path or active.investigation.workspace.roots[1].path }, function(value)
++    if value and not active.closed and active.scope_owner.alive then self:set_scope(active, { kind = "folder", path = value, explicit = true }) end
++  end)
++end
++
++function Controller:_current_file_scope(active)
++  local win = current_editor_window(active.tab)
++  if not win then self:_unavailable(active, "no named editor file is active"); return false end
++  local path = buffer_path(vim.api.nvim_win_get_buf(win))
++  if not path then self:_unavailable(active, "current buffer has no native file path"); return false end
++  return self:set_scope(active, { kind = "file", path = path, explicit = true })
++end
++
++function Controller:_unavailable(active, reason)
++  if active then active.notice = { id = "unavailable", label = "Capability unavailable", detail = reason }; self:_render(active) end
++  return nil, { code = "unavailable", message = reason }
++end
++
++function Controller:_prompt_glob(active, field)
++  local existing = active.investigation.workspace.policy[field] or {}
++  self.input({ prompt = (field == "include" and "Include" or "Exclude") .. " glob: " }, function(value)
++    if not value or value == "" or active.closed or not active.scope_owner.alive then return end
++    if active.scope.kind == "file" and field == "include" then
++      self:_unavailable(active, "current-file search cannot safely combine with workspace include globs")
++      return
++    end
++    local list = copy(existing)
++    list[#list + 1] = value
++    self:_set_glob_policy(active, field, list)
++  end)
++end
++
++function Controller:_set_glob_policy(active, field, values)
++  local workspace = active.investigation.workspace
++  local fields = copy(workspace)
++  fields.generation = fields.generation + 1
++  fields.policy[field] = values
++  local next_workspace, err
++  if self.update_policy then next_workspace, err = self.update_policy(workspace, { [field] = values })
++  else next_workspace, err = Workspace.new(fields) end
++  if not next_workspace then self:_unavailable(active, tostring(err)); return nil end
++  active.investigation.workspace = copy(next_workspace)
++  return self:set_query(active, active.query, true)
++end
++
++function Controller:resume(active, index)
++  if not active or active.closed then return nil, { code = "view_closed", message = "Search view is closed" } end
++  local history = active.investigation.history
++  local entry = type(index) == "number" and history[index] or nil
++  if type(index) == "string" then for _, item in ipairs(history) do if item.id == index then entry = item; break end end end
++  if not entry then return nil, { code = "history_unavailable", message = "search history entry is unavailable" } end
++  self:_cancel_timer(active)
++  self:_cancel_request(active, "resuming a different search")
++  if active.investigation.current and active.investigation.current.store_session then active.investigation.current.store_session:close() end
++  local resumed, err = self.store:resume(entry.store_session.id)
++  if not resumed then return nil, { code = "history_unavailable", message = tostring(err) } end
++  entry.store_session = resumed
++  active.investigation.current = entry
++  active.query = entry.options.query
++  active.flags = copy(entry.options.flags)
++  active.scope = copy(entry.options.scope)
++  active.selected_id = resumed.selected_id
++  active.view_state = entry.view_state or { offset = 0, visible_limit = UiSearch.page_size, expanded = {} }
++  active.offset = active.view_state.offset or 0
++  active.visible_limit = active.view_state.visible_limit or UiSearch.page_size
++  active.expanded = copy(active.view_state.expanded or {})
++  active.phase = "Resumed"
++  active.notice = nil
++  self:_render(active)
++  return true
++end
++
++function Controller:prompt_resume(active)
++  local choices, lookup = {}, {}
++  for index = #active.investigation.history, 1, -1 do
++    local entry = active.investigation.history[index]
++    local summary = self.store:summary(entry.result_id)
++    choices[#choices + 1] = string.format("%s · %d matches · %s", entry.options.query, summary and summary.item_count or 0, self:_phase_for(entry))
++    lookup[#choices] = entry
++  end
++  self.select(choices, { prompt = "Resume search:" }, function(_, index)
++    local entry = index and lookup[index]
++    if entry and not active.closed and active.scope_owner.alive then self:resume(active, entry.id) end
++  end)
++end
++
++function Controller:status()
++  local active = {}
++  for tab, session in pairs(self.active) do
++    if not session.closed then
++      active[#active + 1] = {
++        tab = tab,
++        query = session.query,
++        phase = session.phase,
++        request_active = session.request ~= nil,
++        generation = session.query_generation or 0,
++        resources = session.scope_owner:inventory(),
++        view = session.view and not session.view.closed,
++      }
++    end
++  end
++  table.sort(active, function(a, b) return a.tab < b.tab end)
++  local investigations = 0
++  for _ in pairs(self.investigations) do investigations = investigations + 1 end
++  return { disposed = self.disposed, active_views = #active, investigations = investigations, sessions = active, resources = self.scope:inventory() }
++end
++
++function Controller:_dispose_ui(active)
++  if active.closed then return false end
++  active.closed = true
++  active.query_generation = (active.query_generation or 0) + 1
++  self:_cancel_timer(active)
++  self:_cancel_request(active, "search view closed")
++  local current = active.investigation.current
++  if current then
++    current.view_state = current.view_state or {}
++    current.view_state.offset = active.offset or 0
++    current.view_state.visible_limit = active.visible_limit or UiSearch.page_size
++    current.view_state.selected_id = active.selected_id or (active.view and active.view.selected_id)
++    current.view_state.expanded = copy(active.expanded or (active.view and active.view.expanded) or {})
++    if current.store_session then current.store_session:select(current.view_state.selected_id) end
++  end
++  if active.investigation.current and active.investigation.current.store_session then active.investigation.current.store_session:close() end
++  if active.preview and not active.preview.disposed then active.preview:dispose() end
++  if self.active[active.tab] == active then self.active[active.tab] = nil end
++  active.view = nil
++  if not vim.api.nvim_tabpage_is_valid(active.tab) then
++    for _, entry in ipairs(active.investigation.history) do
++      if entry.store_session then entry.store_session:dispose() end
++    end
++    self.investigations[active.investigation.key] = nil
++  end
++  return true
++end
++
++function Controller:dispose()
++  if self.disposed then return false end
++  self.disposed = true
++  local tabs = {}
++  for tab, active in pairs(self.active) do if not active.closed then tabs[#tabs + 1] = { tab = tab, active = active } end end
++  for _, record in ipairs(tabs) do
++    self.layout:close("workbench-search", record.tab)
++    self:_dispose_ui(record.active)
++  end
++  for _, investigation in pairs(self.investigations) do
++    for _, entry in ipairs(investigation.history) do if entry.store_session then entry.store_session:dispose() end end
++  end
++  self.investigations = {}
++  if self.owns_palette and self.palette then self.palette:dispose() end
++  self.scope:dispose()
++  if self.owns_actions then self.actions = nil end
++  return true
++end
++
++return M
+diff --git a/lua/workbench/ui/search.lua b/lua/workbench/ui/search.lua
+new file mode 100644
+index 0000000..3491cc2
+--- /dev/null
++++ b/lua/workbench/ui/search.lua
+@@ -0,0 +1,151 @@
++local Resource = require("workbench.core.resource")
++
++local M = { page_size = 200, max_page_size = 1000 }
++
++local function compact(value, limit)
++  value = tostring(value or ""):gsub("[%c]", " "):gsub("%s+", " ")
++  if #value > limit then
++    local low, high = 0, vim.fn.strchars(value)
++    while low < high do
++      local middle = math.floor((low + high + 1) / 2)
++      if #vim.fn.strcharpart(value, 0, middle, true) <= limit - 3 then low = middle else high = middle - 1 end
++    end
++    value = vim.fn.strcharpart(value, 0, low, true) .. "..."
++  end
++  return value
++end
++
++M.compact = compact
++
++local function scope_label(scope, workspace)
++  if type(scope) ~= "table" then return "scope unavailable" end
++  if scope.kind == "all_roots" then return "workspace" end
++  local root = workspace.roots[1].path
++  local path = scope.path or (scope.resource and scope.resource.path) or ""
++  if scope.kind == "folder" then
++    local relative = vim.fs.relpath(root, path)
++    return "folder:" .. Resource.escape_display(relative == "." and "." or relative or path)
++  end
++  if scope.kind == "file" then
++    return "current file:" .. Resource.escape_display(vim.fs.basename(path))
++  end
++  return tostring(scope.kind)
++end
++
++function M.title(state)
++  return "Search"
++end
++
++function M.header(state)
++  local query = compact(state.query, 80)
++  if query == "" then query = "(empty query)" end
++  local flags = state.flags or {}
++  local policy = state.workspace.policy or {}
++  local include = policy.include or {}
++  local exclude = policy.exclude or {}
++  local function patterns(list)
++    local values = {}
++    for index = 1, math.min(#list, 3) do values[#values + 1] = compact(list[index], 36) end
++    if #list > 3 then values[#values + 1] = "…" end
++    return #values == 0 and "none" or table.concat(values, ",")
++  end
++  local lines = {
++    "Query: " .. compact(query, 160),
++    string.format("Scope: %s  ·  %s  ·  %s-case%s%s", scope_label(state.scope, state.workspace), flags.fixed and "literal" or "regex", flags.case or "smart", flags.word and " · whole word" or "", state.policy_override and " · explicit current-file target overrides ignore rules" or ""),
++    string.format("Policy: hidden %s · ignored %s · include [%s] · exclude [%s]", policy.hidden or "exclude", policy.ignored or "exclude", patterns(include), patterns(exclude)),
++    string.format("State: %s%s", state.phase or "Ready", state.total and state.total > 0 and string.format(" · matches %d-%d of %d", (state.offset or 0) + 1, math.min((state.offset or 0) + (state.visible_matches or 0), state.total), state.total) or ""),
++  }
++  if state.completeness == "truncated" then lines[4] = lines[4] .. " · partial/capped" end
++  if state.modified_count and state.modified_count > 0 then
++    lines[#lines + 1] = string.format("Disk contents only; %d modified buffer%s excluded", state.modified_count, state.modified_count == 1 and "" or "s")
++  end
++  return lines
++end
++
++function M.project(page, opts)
++  opts = opts or {}
++  local groups, ordered_groups = {}, {}
++  for _, item in ipairs(page and page.items or {}) do
++    local location = item.location or {}
++    local resource = location.resource or {}
++    local uri = resource.uri or ("missing:" .. item.id)
++    local group = groups[uri]
++    if not group then
++      local path = resource.display_path or resource.path or "[unknown file]"
++      group = {
++        id = "file:" .. uri,
++        kind = "file",
++        label = Resource.escape_display(path),
++        detail = "0 matches",
++        expandable = true,
++        payload = { uri = uri, path = resource.path },
++        count = 0,
++      }
++      groups[uri] = group
++      ordered_groups[#ordered_groups + 1] = group
++    end
++    group.count = group.count + 1
++    local line = item.payload and item.payload.line_number or (location.range and location.range.start.line + 1) or "?"
++    local column = location.range and location.range.start.character + 1 or nil
++    local detail = column and string.format("%s:%s", line, column) or tostring(line)
++    group._items = group._items or {}
++    group._items[#group._items + 1] = {
++      id = item.id,
++      kind = "match",
++      parent_id = group.id,
++      label = compact(item.label, 240),
++      detail = detail,
++      location = item.location,
++      payload = item.payload,
++    }
++  end
++
++  local result = {}
++  if opts.notice then
++    result[#result + 1] = {
++      id = "notice:" .. tostring(opts.notice.id or "state"),
++      kind = "notice",
++      label = compact(opts.notice.label or "", 240),
++      detail = compact(opts.notice.detail or "", 120),
++      selectable = false,
++    }
++  end
++  local expanded = {}
++  for _, group in ipairs(ordered_groups) do
++    group.detail = string.format("%d match%s", group.count, group.count == 1 and "" or "es")
++    result[#result + 1] = {
++      id = group.id,
++      kind = group.kind,
++      label = group.label,
++      detail = group.detail,
++      expandable = true,
++      payload = group.payload,
++    }
++    expanded[group.id] = true
++    for _, item in ipairs(group._items) do result[#result + 1] = item end
++  end
++  return result, expanded, {
++    visible_matches = page and #page.items or 0,
++    offset = page and page.offset or 0,
++    next_offset = page and page.next_offset or nil,
++    total_matches = page and page.total or 0,
++  }
++end
++
++function M.help_lines(action_projection)
++  local lines = {
++    "/: query   r: rerun   x: cancel   a/z: next/previous results",
++    "Enter/o: open result   p: preview   R: return to origin",
++    "s: folder scope   F: current file   u: resume history   w: whole word",
++    "l: literal/regex   c: case   H: hidden   I: ignored",
++    "Open-buffer search is unavailable until WB-18; results search disk contents.",
++  }
++  for _, action in ipairs(action_projection or {}) do
++    local state = action.available.enabled and "available" or (action.available.reason or "unavailable")
++    lines[#lines + 1] = string.format("%s — %s (%s)", action.id, action.title, compact(state, 96))
++    if #lines >= 14 then break end
++  end
++  return lines
++end
++
++return M
+diff --git a/lua/workbench/ui/palette.lua b/lua/workbench/ui/palette.lua
+new file mode 100644
+index 0000000..995fe8f
+--- /dev/null
++++ b/lua/workbench/ui/palette.lua
+@@ -0,0 +1,171 @@
++local Scope = require("workbench.core.scope")
++
++local M = {}
++local Palette = {}
++Palette.__index = Palette
++
++local function contains(haystack, needle)
++  if needle == "" then return true end
++  return haystack:lower():find(needle:lower(), 1, true) ~= nil
++end
++
++local function action_items(palette)
++  local projection = palette.actions:list(palette.context())
++  local items, by_id = {}, {}
++  for _, action in ipairs(projection) do
++    local enabled = action.available.enabled
++    local checked = action.checked == nil and "" or (action.checked and " · on" or " · off")
++    local availability = enabled and "available" or ("unavailable: " .. tostring(action.available.reason or action.available.code or "unknown"))
++    local item = {
++      id = action.id,
++      kind = "action",
++      label = action.title,
++      detail = table.concat({ palette.bindings[action.id] or "", action.category, action.scope, availability .. checked }, " · "),
++      payload = { action = action },
++    }
++    by_id[action.id] = action
++    if contains(table.concat({ action.id, action.title, action.category, availability }, " "), palette.filter) then
++      items[#items + 1] = item
++    end
++  end
++  return items, by_id
++end
++
++function M.new(deps)
++  deps = deps or {}
++  if type(deps.layout) ~= "table" or type(deps.layout.mount) ~= "function" then return nil, "palette requires a native layout manager" end
++  if type(deps.actions) ~= "table" or type(deps.actions.list) ~= "function" or type(deps.actions.execute) ~= "function" then
++    return nil, "palette requires the shared action registry"
++  end
++  return setmetatable({
++    layout = deps.layout,
++    actions = deps.actions,
++    bindings = deps.bindings or {},
++    context = type(deps.context) == "function" and deps.context or function() return deps.context or {} end,
++    input = type(deps.input) == "function" and deps.input or vim.ui.input,
++    on_result = deps.on_result,
++    scope = Scope.new("workbench-action-palette"),
++    active = {},
++    disposed = false,
++  }, Palette)
++end
++
++function Palette:_show(palette)
++  if palette.closed or not palette.scope.alive then return false end
++  local items, by_id = action_items(palette)
++  palette.by_id = by_id
++  local title = "Actions · Enter runs · / filters · disabled actions explain why"
++  if palette.error then title = title .. " · " .. palette.error end
++  palette.view.title = title
++  if palette.error then
++    table.insert(items, 1, { id = "palette-message", kind = "notice", label = palette.error, selectable = false })
++  end
++  return palette.view:update({ status = "ready", items = items })
++end
++
++function Palette:_close(palette)
++  if palette.closed then return false end
++  palette.closed = true
++  self.active[palette.tab] = nil
++  if palette.scope.alive then palette.scope:dispose() end
++  return true
++end
++
++function Palette:open(opts)
++  opts = opts or {}
++  if self.disposed then return nil, { code = "disposed", message = "action palette is disposed" } end
++  local tab = opts.tab or vim.api.nvim_get_current_tabpage()
++  if self.active[tab] and not self.active[tab].closed then return self.active[tab].view end
++  local scope, scope_err = self.scope:child("palette:" .. tostring(tab))
++  if not scope then return nil, scope_err end
++  local palette = {
++    tab = tab,
++    scope = scope,
++    actions = self.actions,
++    bindings = self.bindings,
++    filter = opts.filter or "",
++    context_value = opts.context,
++    error = nil,
++    closed = false,
++  }
++  palette.context = function()
++    if type(palette.context_value) == "function" then return palette.context_value() end
++    return palette.context_value or self.context()
++  end
++  local function close()
++    self:_close(palette)
++    return self.layout:close("workbench-palette", tab)
++  end
++  local function filter(view)
++    self.input({ prompt = "Filter actions: ", default = palette.filter }, function(value)
++      if palette.closed or not palette.scope.alive or value == nil then return end
++      palette.filter = value
++      palette.error = nil
++      self:_show(palette)
++    end)
++  end
++  local options = {
++    id = "workbench-palette",
++    title = "Action Palette",
++    kind = "list",
++    placement = "results",
++    model = { status = "ready", items = {} },
++    focus = opts.focus ~= false,
++    help_lines = { "Enter: execute action", "/: filter by title/category/ID", "Unavailable actions remain visible with their reason", "q: close palette" },
++    keymaps = {
++      ["/"] = { desc = "Filter workbench actions", run = filter },
++      ["<CR>"] = { desc = "Execute selected action", run = function(view)
++        view:_sync_selection()
++        local selected = palette.by_id and palette.by_id[view.selected_id]
++        if not selected then return end
++        if not selected.available.enabled then
++          palette.error = selected.available.reason or "action is unavailable"
++          self:_show(palette)
++          return
++        end
++        local result = self.actions:execute(selected.id, palette.context(), {})
++        if self.on_result then pcall(self.on_result, selected.id, result) end
++        if not result.ok then
++          palette.error = result.error.message
++          self:_show(palette)
++          return
++        end
++        self:_close(palette)
++        self.layout:close("workbench-palette", tab)
++      end },
++    },
++    on_dispose = function() self:_close(palette) end,
++  }
++  local view, mount_err = self.layout:mount(options)
++  if not view then scope:dispose(); return nil, mount_err end
++  palette.view = view
++  self.active[tab] = palette
++  self:_show(palette)
++  return view
++end
++
++function Palette:close(tab)
++  local target = tab or vim.api.nvim_get_current_tabpage()
++  local palette = self.active[target]
++  if not palette then return false end
++  self:_close(palette)
++  return self.layout:close("workbench-palette", target)
++end
++
++function Palette:status()
++  local active = 0
++  for _, palette in pairs(self.active) do if not palette.closed then active = active + 1 end end
++  return { disposed = self.disposed, active = active, resources = self.scope:inventory() }
++end
++
++function Palette:dispose()
++  if self.disposed then return false end
++  self.disposed = true
++  local tabs = {}
++  for tab in pairs(self.active) do tabs[#tabs + 1] = tab end
++  for _, tab in ipairs(tabs) do self:close(tab) end
++  self.scope:dispose()
++  return true
++end
++
++return M
+diff --git a/tests/runtime/test_search_controller.lua b/tests/runtime/test_search_controller.lua
+new file mode 100644
+index 0000000..08b7d0d
+--- /dev/null
++++ b/tests/runtime/test_search_controller.lua
+@@ -0,0 +1,244 @@
++local MiniTest = require("mini.test")
++local expect = MiniTest.expect
++local child
++local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
++
++local function evaluate(source, ...)
++  local wrapped = "local args={...}; local unpack_fn=unpack or table.unpack; local ok,result=xpcall(function(...)\n" .. source .. "\nend,debug.traceback,unpack_fn(args)); if not ok then return {__child_error=result} end; return result"
++  local result = child.lua(wrapped, { ... })
++  if type(result) == "table" and result.__child_error then error("search-controller child evaluation failed: " .. vim.inspect(result.__child_error), 2) end
++  return result
++end
++
++return MiniTest.new_set({
++  hooks = {
++    pre_case = function()
++      child = MiniTest.new_child_neovim()
++      child.start({}, { nvim_executable = assert(vim.env.NVIM_TEST_BINARY) })
++      child.lua("local repo_root, test_root = ...; vim.opt.runtimepath:prepend(repo_root); vim.opt.runtimepath:append(test_root)", { root, root .. "/tests" })
++    end,
++    post_case = function()
++      if child then pcall(child.stop); child = nil end
++    end,
++  },
++}, {
++  ["real rg renders grouped folder results, labels disk state, and leaves cwd/buffers intact"] = function()
++    local result = evaluate([[
++      local root=vim.fn.tempname()..'-wb10-search'
++      assert(vim.fn.mkdir(root..'/A','p')==1); assert(vim.fn.mkdir(root..'/B','p')==1)
++      assert(vim.fn.writefile({'disk needle','second line'},root..'/A/one.txt')==0)
++      assert(vim.fn.writefile({'disk needle'},root..'/A/two.txt')==0)
++      assert(vim.fn.writefile({'disk needle'},root..'/B/other.txt')==0)
++      local ws_service=assert(require('workbench.services.workspace').new({
++        root_service={canonicalize=function(_,path) return assert((vim.uv or vim.loop).fs_realpath(path)) end},
++        ignore_service={snapshot=function() return {hidden='exclude',ignored='exclude',symlinks='never',include={},exclude={}} end},
++      }))
++      local workspace=assert(ws_service:open({explicit_root=root}))
++      local dirty_path=workspace.roots[1].path..'/A/one.txt'
++      local dirty=vim.fn.bufadd(dirty_path); vim.fn.bufload(dirty)
++      vim.api.nvim_buf_set_lines(dirty,0,-1,false,{'unsaved version','second line'}); vim.bo[dirty].modified=true
++      vim.api.nvim_win_set_buf(0,dirty)
++      vim.cmd('tcd '..vim.fn.fnameescape(root..'/B'))
++      local cwd=vim.fn.getcwd()
++      local layout=require('workbench.ui.layout').new({min_editor_width=30})
++      local provider=assert(require('workbench.providers.rg').new())
++      local store=assert(require('workbench.services.results').new())
++      local nav=assert(require('workbench.services.navigation').new())
++      local controller=assert(require('workbench.controllers.search').new({layout=layout,provider=provider,store=store,navigation=nav,workspace=workspace,debounce_ms=1}))
++      local view=assert(controller:search_in_folder(workspace,workspace.roots[1].path..'/A',{focus=false}))
++      local active=controller.active[vim.api.nvim_get_current_tabpage()]
++      assert(controller:set_query(active,'needle',true))
++      assert(vim.wait(5000,function()
++        local entry=active.investigation.current
++        local summary=entry and store:summary(entry.result_id)
++        return summary and summary.status~='running'
++      end,5),'real rg search did not finish')
++      vim.wait(1000,function() return active.view and #active.view.rows>0 end,5)
++      local entry=active.investigation.current
++      local summary=assert(store:summary(entry.result_id))
++      local page=assert(store:page(entry.result_id,0,200))
++      local names={}; for _,item in ipairs(page.items) do names[vim.fs.basename(item.location.resource.path)]=true end
++      local rows={}; for _,row in ipairs(view.rows) do rows[#rows+1]={kind=row.kind,label=row.label,id=row.id} end
++      local header=table.concat(view.model.header or {},' | ')
++      local cwd_same=vim.fn.getcwd()==cwd
++      local dirty_still_modified=vim.bo[dirty].modified and vim.api.nvim_buf_get_lines(dirty,0,1,false)[1]=='unsaved version'
++      local grouped_files=0; for _,row in ipairs(view.rows) do if row.kind=='file' then grouped_files=grouped_files+1 end end
++      view:close()
++      local closed=controller:status().active_views==0 and provider:status().active_requests==0
++      controller:dispose(); nav:dispose(); provider:dispose(); store:dispose(); layout:dispose()
++      vim.bo[dirty].modified=false; vim.fn.delete(root,'rf')
++      return {count=summary.item_count,status=summary.status,names=names,rows=rows,header=header,cwd_same=cwd_same,dirty_still_modified=dirty_still_modified,grouped_files=grouped_files,closed=closed}
++    ]])
++    expect.equality(result.status, "complete")
++    expect.equality(result.count, 2)
++    expect.equality(result.names["one.txt"], true)
++    expect.equality(result.names["two.txt"], true)
++    expect.equality(result.names["other.txt"], nil)
++    expect.equality(result.grouped_files, 2)
++    expect.equality(result.header:find("Scope: folder:A",1,true)~=nil,true)
++    expect.equality(result.header:find("Disk contents only; 1 modified buffer excluded",1,true)~=nil,true)
++    expect.equality(result.cwd_same,true)
++    expect.equality(result.dirty_still_modified,true)
++    expect.equality(result.closed,true)
++  end,
++
++  ["stale generations are rejected, debounce coalesces input, and result history resumes"] = function()
++    local result = evaluate([[
++      local root=vim.fn.tempname()..'-wb10-race'; assert(vim.fn.mkdir(root,'p')==1)
++      assert(vim.fn.writefile({'x'},root..'/one.txt')==0)
++      local workspace=assert(require('workbench.services.workspace').new({root_service={canonicalize=function(_,p) return p end},ignore_service={snapshot=function() return {hidden='exclude',ignored='include',symlinks='never',include={},exclude={}} end}})):open({explicit_root=root})
++      local fake={calls={}}
++      function fake:capabilities() return {state='ready',operations={'search'}} end
++      function fake:start(request,sink)
++        local call={request=request,cancelled=false,finished=false}; self.calls[#self.calls+1]=call
++        call.sink=function(event)
++          if event.kind=='done' or event.kind=='error' then call.finished=true end
++          return sink(event)
++        end
++        return {cancel=function() if call.finished then return false end; call.cancelled=true; return true end}
++      end
++      local layout=require('workbench.ui.layout').new()
++      local store=assert(require('workbench.services.results').new())
++      local nav=assert(require('workbench.services.navigation').new())
++      local controller=assert(require('workbench.controllers.search').new({layout=layout,provider=fake,store=store,navigation=nav,workspace=workspace,debounce_ms=20}))
++      local view=assert(controller:open({workspace=workspace,focus=false}))
++      local active=controller.active[vim.api.nvim_get_current_tabpage()]
++      controller:set_query(active,'first')
++      controller:set_query(active,'stale')
++      controller:set_query(active,'latest')
++      assert(vim.wait(3000,function() return #fake.calls==1 end,5),'debounced input did not coalesce')
++      local call=fake.calls[1]
++      local Resource=require('workbench.core.resource'); local Location=require('workbench.core.location')
++      local resource=assert(Resource.from_path(root..'/one.txt',{workspace_id=workspace.id}))
++      local location=assert(Location.new(resource,{range={start={line=0,character=0},finish={line=0,character=1}},encoding='utf-8'}))
++      local function item(id,label)
++        return {id=id,kind='match',label=label,detail='one.txt:1',location=location,payload={line_number=1,raw_line=label}}
++      end
++      local id=active.investigation.current.result_id
++      controller:set_query(active,'newer',true)
++      local second=fake.calls[2]
++      local second_id=active.investigation.current.result_id
++      local searching_visible=vim.wait(1000,function()
++        for _,row in ipairs(view.rows) do if row.label=='Searching…' then return true end end
++        return false
++      end,5)
++      second.sink({kind='batch',generation=second.request.generation,items={item('new','new result')}})
++      second.sink({kind='done',generation=second.request.generation,status='complete'})
++      assert(vim.wait(1000,function() return store:summary(second_id).status=='complete' end,5))
++      call.sink({kind='batch',generation=call.request.generation,items={item('late','late stale result')}})
++      local stale_count=store:summary(id).item_count
++      local latest_count=store:summary(second_id).item_count
++      local history_count=#active.investigation.history
++      assert(controller:resume(active,id))
++      local resumed=active.investigation.current.result_id==id and active.query=='latest'
++      controller:set_query(active,'closing',true)
++      local closing=fake.calls[3]
++      local closing_id=active.investigation.current.result_id
++      assert(closing and closing.request.generation)
++      view:close()
++      closing.sink({kind='batch',generation=closing.request.generation,items={item('closed-late','late result after view disposal')}})
++      local closed_summary=assert(store:summary(closing_id))
++      local state=controller:status()
++      controller:dispose(); nav:dispose(); store:dispose(); layout:dispose(); vim.fn.delete(root,'rf')
++      return {calls=#fake.calls,first_cancelled=call.cancelled,closing_cancelled=closing.cancelled,closed_status=closed_summary.status,closed_count=closed_summary.item_count,stale_count=stale_count,latest_count=latest_count,history_count=history_count,resumed=resumed,searching_visible=searching_visible,active_after_close=state.active_views}
++    ]])
++    expect.equality(result.calls, 3)
++    expect.equality(result.first_cancelled, true)
++    expect.equality(result.stale_count, 0)
++    expect.equality(result.latest_count, 1)
++    expect.equality(result.history_count, 2)
++    expect.equality(result.resumed, true)
++    expect.equality(result.searching_visible, true)
++    expect.equality(result.closing_cancelled, true)
++    expect.equality(result.closed_status, "cancelled")
++    expect.equality(result.closed_count, 0)
++    expect.equality(result.active_after_close, 0)
++  end,
++
++  ["palette keeps unavailable capabilities discoverable and current-file ignore behavior explicit"] = function()
++    local result = evaluate([[
++      local root=vim.fn.tempname()..'-wb10-palette'; assert(vim.fn.mkdir(root,'p')==1); assert(vim.fn.writefile({'needle'},root..'/file.txt')==0)
++      local workspace=assert(require('workbench.services.workspace').new({root_service={canonicalize=function(_,p) return p end},ignore_service={snapshot=function() return {hidden='exclude',ignored='exclude',symlinks='never',include={},exclude={}} end}})):open({explicit_root=root})
++      local layout=require('workbench.ui.layout').new(); local provider=assert(require('workbench.providers.rg').new()); local store=assert(require('workbench.services.results').new()); local actions=require('workbench.core.actions').new()
++      local nav=assert(require('workbench.services.navigation').new())
++      local controller=assert(require('workbench.controllers.search').new({layout=layout,provider=provider,store=store,actions=actions,navigation=nav,workspace=workspace,debounce_ms=1}))
++      local buf=vim.fn.bufadd(root..'/file.txt'); vim.fn.bufload(buf); vim.api.nvim_win_set_buf(0,buf)
++      local view=assert(controller:search_current_file(workspace,root..'/file.txt',{focus=false,query='needle'}))
++      local active=controller.active[vim.api.nvim_get_current_tabpage()]
++      assert(vim.wait(1000,function() return view.model.header and view.model.header[2] and view.model.header[2]:find('explicit current%-file target')~=nil end,5))
++      local projection=actions:list(controller:_action_context({workspace=workspace,search=active}))
++      local by_id={}; for _,action in ipairs(projection) do by_id[action.id]=action end
++      local palette=assert(controller.palette:open({focus=false,context=controller:_action_context({workspace=workspace,search=active})}))
++      local palette_state=controller.palette.active[vim.api.nvim_get_current_tabpage()]
++      palette_state.filter='open buffers'; controller.palette:_show(palette_state)
++      local palette_lines=vim.api.nvim_buf_get_lines(palette.buffer,0,-1,false)
++      local output={
++        open_buffers_enabled=by_id['search.open_buffers'].available.enabled,
++        open_buffers_reason=by_id['search.open_buffers'].available.reason,
++        ignored_toggle_enabled=by_id['search.toggle_ignored'].available.enabled,
++        ignored_toggle_reason=by_id['search.toggle_ignored'].available.reason,
++        header=table.concat(view.model.header or {},' | '),
++        palette_has_disabled=table.concat(palette_lines,' | '):find('Search open buffers',1,true)~=nil,
++        palette_detail=table.concat(palette_lines,' | '):find('WB-18',1,true)~=nil,
++        palette_rows=#palette.rows,
++      }
++      controller.palette:close(); view:close(); controller:dispose(); nav:dispose(); provider:dispose(); store:dispose(); layout:dispose(); vim.fn.delete(root,'rf')
++      return output
++    ]])
++    expect.equality(result.open_buffers_enabled, false)
++    expect.equality(result.open_buffers_reason:find("WB%-18")~=nil,true)
++    expect.equality(result.ignored_toggle_enabled,false)
++    expect.equality(result.ignored_toggle_reason:find("direct%-file semantics")~=nil,true)
++    expect.equality(result.header:find("explicit current%-file target overrides ignore rules")~=nil,true)
++    expect.equality(result.palette_has_disabled,true)
++    expect.equality(result.palette_detail,true)
++    expect.equality(result.palette_rows>0,true)
++  end,
++
++  ["empty and missing-rg states are explicit and repeated close releases owned views"] = function()
++    local result = evaluate([[
++      local root=vim.fn.tempname()..'-wb10-unavailable'; assert(vim.fn.mkdir(root,'p')==1)
++      local workspace=assert(require('workbench.services.workspace').new({root_service={canonicalize=function(_,p) return p end},ignore_service={snapshot=function() return {hidden='exclude',ignored='exclude',symlinks='never',include={},exclude={}} end}})):open({explicit_root=root})
++      local layout=require('workbench.ui.layout').new()
++      local provider=assert(require('workbench.providers.rg').new({executable=function() return '' end}))
++      local store=assert(require('workbench.services.results').new())
++      local nav=assert(require('workbench.services.navigation').new())
++      local actions=require('workbench.core.actions').new()
++      local controller=assert(require('workbench.controllers.search').new({layout=layout,provider=provider,store=store,actions=actions,navigation=nav,workspace=workspace,debounce_ms=1}))
++      local ctx=controller:_action_context({workspace=workspace})
++      local listed=actions:list(ctx); local workspace_action
++      for _,action in ipairs(listed) do if action.id=='search.workspace' then workspace_action=action end end
++      assert(workspace_action and not workspace_action.available.enabled)
++      local palette=assert(controller.palette:open({focus=false,context=ctx}))
++      local palette_state=controller.palette.active[vim.api.nvim_get_current_tabpage()]
++      local reason=palette_state.by_id['search.workspace'].available.reason
++      assert(reason:find("ripgrep executable 'rg' was not found",1,true))
++      controller.palette:close()
++      local cycles=0
++      for _=1,100 do
++        local view=assert(controller:open({workspace=workspace,focus=false}))
++        local active=controller.active[vim.api.nvim_get_current_tabpage()]
++        assert(active.query=='')
++        assert(provider:status().active_requests==0)
++        assert(controller:set_query(active,'needle',true)==false)
++        assert(vim.wait(1000,function()
++          for _,row in ipairs(view.rows) do if row.label=='Search unavailable' then return true end end
++          return false
++        end,5),'missing ripgrep state was not rendered')
++        assert(view:close())
++        local layout_state=layout:status()
++        assert(layout_state.active_views==0)
++        assert(provider:status().active_requests==0)
++        cycles=cycles+1
++      end
++      local status=controller:status()
++      controller:dispose(); nav:dispose(); provider:dispose(); store:dispose(); layout:dispose(); vim.fn.delete(root,'rf')
++      return {reason=reason,cycles=cycles,active_views=status.active_views,active_requests=provider:status().active_requests,layout_views=layout:status().active_views}
++    ]])
++    expect.equality(result.reason:find("ripgrep executable 'rg' was not found",1,true)~=nil,true)
++    expect.equality(result.cycles,100)
++    expect.equality(result.active_views,0)
++    expect.equality(result.active_requests,0)
++    expect.equality(result.layout_views,0)
++  end,
++})
+diff --git a/tests/e2e/wb10_search.py b/tests/e2e/wb10_search.py
+new file mode 100644
+index 0000000..b1cdbb6
+--- /dev/null
++++ b/tests/e2e/wb10_search.py
+@@ -0,0 +1,381 @@
++#!/usr/bin/env python3
++"""Real Neovim RPC-grid acceptance for scoped Search and the action palette."""
++
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import secrets
++import shutil
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++import traceback
++from pathlib import Path
++from typing import Any
++
++import pynvim
++
++ROOT = Path(__file__).resolve().parents[2]
++sys.path.insert(0, str(ROOT))
++from tests.e2e.driver import Grid, git_head, parse_grids  # noqa: E402
++
++
++class Run:
++    def __init__(self, nvim: str, cols: int, rows: int, output: Path):
++        self.nvim = str(Path(nvim).resolve()) if Path(nvim).exists() else (shutil.which(nvim) or str(Path(nvim).resolve()))
++        self.cols, self.rows, self.output = cols, rows, output
++        self.proc: subprocess.Popen[str] | None = None
++        self.control = None
++        self.ui = None
++        self.thread: threading.Thread | None = None
++        self.grid = Grid()
++        self.socket = f"/tmp/wb10-{secrets.token_hex(8)}.sock"
++        self.xdg: tempfile.TemporaryDirectory[str] | None = None
++        self.fixture: tempfile.TemporaryDirectory[str] | None = None
++        self.workspace: Path | None = None
++        self.editor_cwd: Path | None = None
++        self.command: list[str] = []
++        self.failure: str | None = None
++        self.returncode: int | None = None
++        self.child_reaped = False
++        self.phase = "setup"
++        self.first_shell_ms: float | None = None
++        self.outcome: dict[str, Any] = {}
++
++    def lua(self, source: str, *args):
++        assert self.control is not None
++        return self.control.exec_lua(source, list(args))
++
++    def wait_lua(self, expression: str, description: str, timeout: float = 8.0):
++        deadline = time.monotonic() + timeout
++        while time.monotonic() < deadline:
++            if self.lua(expression):
++                return
++            time.sleep(0.01)
++        raise TimeoutError(f"timed out waiting for {description}")
++
++    def wait_screen(self, fragment: str, timeout: float = 8.0):
++        self.grid.wait_for(lambda: any(fragment in line for line in self.grid.lines()), timeout, fragment)
++
++    def input(self, keys: str):
++        assert self.control is not None
++        self.control.request("nvim_input", keys, async_=True)
++
++    def prompt(self, key: str, value: str, prompt_fragment: str, pending_fragment: str | None = None):
++        self.input(key)
++        self.wait_screen(prompt_fragment)
++        self.input("\x15" + value + "\r")
++        if pending_fragment:
++            self.wait_screen(pending_fragment)
++        time.sleep(0.08)
++
++    def _start(self):
++        self.output.mkdir(parents=True, exist_ok=False)
++        self.fixture = tempfile.TemporaryDirectory(prefix="wb10-search-")
++        base = Path(self.fixture.name)
++        self.workspace = base / "workspace"
++        self.editor_cwd = base / "editor-cwd"
++        (self.workspace / "A").mkdir(parents=True)
++        (self.workspace / "B").mkdir()
++        self.editor_cwd.mkdir()
++        self.origin = base / "origin.txt"
++        self.target = self.workspace / "A" / "a-target.txt"
++        self.sibling = self.workspace / "A" / "sibling.txt"
++        self.origin.write_text("original disk origin\nsecond origin line\n", encoding="utf-8")
++        self.target.write_text("\n".join(f"disk needle line {index}" for index in range(1, 7)) + "\n", encoding="utf-8")
++        self.sibling.write_text("\n".join(f"sibling needle match {index}" for index in range(1, 5)) + "\n", encoding="utf-8")
++        (self.workspace / "B" / "cwd-decoy.txt").write_text("needle outside chosen folder\n", encoding="utf-8")
++        (self.workspace / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
++        (self.workspace / "ignored.txt").write_text("needle ignored by workspace policy\n", encoding="utf-8")
++
++        self.xdg = tempfile.TemporaryDirectory(prefix="wb10-xdg-")
++        xdg_root = Path(self.xdg.name)
++        for name in ("config", "data", "state", "cache"):
++            (xdg_root / name).mkdir()
++        environment = os.environ.copy()
++        environment.update({
++            "XDG_CONFIG_HOME": str(xdg_root / "config"),
++            "XDG_DATA_HOME": str(xdg_root / "data"),
++            "XDG_STATE_HOME": str(xdg_root / "state"),
++            "XDG_CACHE_HOME": str(xdg_root / "cache"),
++            "GIT_CONFIG_NOSYSTEM": "1",
++        })
++        self.command = [
++            self.nvim, "--clean", "--headless", "--listen", self.socket,
++            "--cmd", f"set lines={self.rows} columns={self.cols}",
++            "--cmd", f"set runtimepath^={ROOT}",
++        ]
++        self.proc = subprocess.Popen(self.command, cwd=self.editor_cwd, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++        deadline = time.monotonic() + 5
++        while not Path(self.socket).exists():
++            if self.proc.poll() is not None:
++                stdout, stderr = self.proc.communicate()
++                raise RuntimeError(f"Neovim exited before RPC listen: {stdout}\n{stderr}")
++            if time.monotonic() >= deadline:
++                raise TimeoutError("Neovim RPC socket did not appear")
++            time.sleep(0.01)
++        self.control = pynvim.attach("socket", path=self.socket)
++        self.ui = pynvim.attach("socket", path=self.socket)
++        self.ui.ui_attach(self.cols, self.rows, rgb=True, ext_linegrid=True)
++        self.thread = threading.Thread(target=self._ui_loop, daemon=True, name="wb10-grid")
++        self.thread.start()
++        self.grid.wait_for(lambda: self.grid.flushes > 0, 5, "initial UI frame")
++        self.control.api.set_option("mouse", "a")
++        shell_started = time.perf_counter_ns()
++        self.lua("local args=...; vim.o.hidden=true; _G.wb10_origin_path=args[1]; _G.wb10_target_path=assert((vim.uv or vim.loop).fs_realpath(args[2])); vim.api.nvim_cmd({cmd='edit',args={_G.wb10_origin_path}},{}); _G.wb10_origin_win=vim.api.nvim_get_current_win(); _G.wb10_origin_buf=vim.api.nvim_get_current_buf(); vim.api.nvim_buf_set_lines(_G.wb10_origin_buf,0,-1,false,{'USER MODIFIED ORIGIN','second user line'}); vim.bo[_G.wb10_origin_buf].modified=true; _G.wb10_jump_before=vim.fn.getjumplist(_G.wb10_origin_win); local root=args[3]; local Workspace=require('workbench.services.workspace'); _G.wb10_workspace=assert(Workspace.new({root_service={canonicalize=function(_,path) return assert((vim.uv or vim.loop).fs_realpath(path)) end},ignore_service={snapshot=function() return {hidden='exclude',ignored='exclude',symlinks='never',include={},exclude={}} end}})):open({explicit_root=root}); _G.wb10_layout=require('workbench.ui.layout').new({min_editor_width=30,min_editor_height=8,results_height=8}); _G.wb10_provider=assert(require('workbench.providers.rg').new({max_items=8,max_batch_items=2})); _G.wb10_store=assert(require('workbench.services.results').new()); _G.wb10_nav=assert(require('workbench.services.navigation').new()); _G.wb10_actions=require('workbench.core.actions').new(); _G.wb10_controller=assert(require('workbench.controllers.search').new({layout=_G.wb10_layout,provider=_G.wb10_provider,store=_G.wb10_store,navigation=_G.wb10_nav,actions=_G.wb10_actions,workspace=_G.wb10_workspace,debounce_ms=80})); local dirty=vim.fn.bufadd(_G.wb10_target_path); vim.fn.bufload(dirty); vim.api.nvim_buf_set_lines(dirty,0,-1,false,{'USER EDITED needle target','unsaved second line','unsaved third line'}); vim.bo[dirty].modified=true; _G.wb10_dirty_buf=dirty; _G.wb10_cwd=vim.fn.getcwd(); _G.wb10_view=assert(_G.wb10_controller:search_in_folder(_G.wb10_workspace,assert((vim.uv or vim.loop).fs_realpath(root))..'/A',{focus=true})); return {workspace=_G.wb10_workspace.roots[1].path,cwd=_G.wb10_cwd,view=_G.wb10_view.mode,dirty=vim.bo[dirty].modified}", str(self.origin), str(self.target), str(self.workspace))
++        self.grid.wait_for(lambda: any("Query: (empty query)" in line for line in self.grid.lines()), 8, "empty Search shell in grid")
++        self.wait_screen("Enter / to search the selected scope")
++        self.wait_lua("return _G.wb10_provider:status().active_requests==0 and _G.wb10_controller.active[vim.api.nvim_get_current_tabpage()].query==''", "empty query without repository scan")
++        empty_screen = self.grid.snapshot()["text"]
++        (self.output / "empty-query-screen.txt").write_text("\n".join(empty_screen) + "\n", encoding="utf-8")
++        self.first_shell_ms = (time.perf_counter_ns() - shell_started) / 1_000_000
++
++    def _exercise(self) -> dict[str, Any]:
++        assert self.workspace is not None and self.target is not None
++        self.phase = "real-query-input"
++        started = time.perf_counter_ns()
++        self.prompt("/", "needle", "Search folder:", pending_fragment="Waiting for query debounce")
++        self.wait_lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; local e=s and s.investigation.current; local r=e and _G.wb10_store:summary(e.result_id); return r and r.status~='running'", "real ripgrep completion")
++        self.wait_screen("Scope: folder:A")
++        self.wait_screen("Query: needle")
++        self.wait_lua("return _G.wb10_controller.active[vim.api.nvim_get_current_tabpage()].total>0", "first visible result batch")
++        first_result_ms = (time.perf_counter_ns() - started) / 1_000_000
++        self.wait_lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; return s.preview and s.preview.last_preview~=nil", "bounded result preview")
++        self.grid.wait_for(lambda: any("[Preview]" in line for line in self.grid.lines()), 8, "preview in actual grid")
++        self.wait_lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; local e=s.investigation.current; local item=s.selected_id and _G.wb10_store:item(e.result_id,s.selected_id); return item and item.location.resource.path==_G.wb10_target_path and s.preview.last_preview and s.preview.last_preview.path==_G.wb10_target_path and s.preview.last_preview.modified", "modified-buffer preview")
++        self.grid.wait_for(lambda: any("USER EDITED needle target" in line for line in self.grid.lines()), 8, "modified-buffer preview in the rendered grid")
++
++        self.phase = "scope-policy-and-preview"
++        first_state = self.lua("local c=_G.wb10_controller; local s=c.active[vim.api.nvim_get_current_tabpage()]; local e=s.investigation.current; local summary=_G.wb10_store:summary(e.result_id); local paths={}; for _,item in ipairs(_G.wb10_store:page(e.result_id,0,200).items) do paths[vim.api.nvim_buf_get_name(vim.fn.bufadd(item.location.resource.path))]=true end; local names={}; for path in pairs(paths) do names[vim.fn.fnamemodify(path,':t')]=true end; local action={}; for _,a in ipairs(_G.wb10_actions:list(c:_action_context({workspace=_G.wb10_workspace,search=s}))) do if a.id=='search.toggle_ignored' or a.id=='search.open_buffers' then action[a.id]={enabled=a.available.enabled,reason=a.available.reason} end end; return {summary=summary,total=s.total,names=names,header=s.view.model.header,phase=s.phase,view_mode=s.view.mode,preview=s.preview.last_preview,focus=vim.api.nvim_get_current_win()==s.view.window,cwd=vim.fn.getcwd(),cwd_expected=_G.wb10_cwd,dirty=vim.bo[_G.wb10_dirty_buf].modified,dirty_lines=vim.api.nvim_buf_get_lines(_G.wb10_dirty_buf,0,-1,false),actions=action,screen=s.view.buffer and vim.api.nvim_buf_get_lines(s.view.buffer,0,-1,false) or {}}")
++        if first_state["summary"]["status"] != "partial" or first_state["total"] != 8:
++            raise AssertionError(f"search cap was not represented as partial: {first_state}")
++        if set(first_state["names"]) != {"a-target.txt", "sibling.txt"}:
++            raise AssertionError(f"folder scope leaked or omitted results: {first_state['names']}")
++        if not any("Scope: folder:A" in line for line in first_state["header"]):
++            raise AssertionError(f"folder scope is not visible: {first_state['header']}")
++        if not any("modified buffer excluded" in line for line in first_state["header"]):
++            raise AssertionError(f"disk-vs-unsaved warning was not shown: {first_state['header']}")
++        if first_state["cwd"] != first_state["cwd_expected"] or not first_state["dirty"]:
++            raise AssertionError(f"search changed cwd or dirtied-buffer state: {first_state}")
++        if not first_state["preview"]["modified"] or not first_state["focus"]:
++            raise AssertionError(f"preview did not label the loaded modified buffer or preserve Search focus: {first_state}")
++        if not first_state["actions"]["search.toggle_ignored"]["enabled"]:
++            raise AssertionError("workspace ignored-policy toggle unexpectedly unavailable for folder scope")
++
++        mouse_target = self.lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; local visible={}; for _,row in ipairs(s.view.visible_rows) do visible[row.id]=row end; for line,id in pairs(s.view.row_by_line) do local row=visible[id]; if row and row.kind=='file' then local pos=vim.fn.screenpos(s.view.window,line,1); return {id=id,row=pos.row-1,col=pos.col+7} end end")
++        if not mouse_target or mouse_target["row"] < 0:
++            raise AssertionError(f"second target match is not visible for mouse selection: {mouse_target}")
++        self.lua("local args=...; _G.wb10_expected_mouse_id=args[1]", mouse_target["id"])
++        self.control.api.input_mouse("left", "press", "", 0, mouse_target["row"], mouse_target["col"])
++        self.control.api.input_mouse("left", "release", "", 0, mouse_target["row"], mouse_target["col"])
++        self.wait_lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; return s.view.selected_id==_G.wb10_expected_mouse_id and vim.api.nvim_get_current_win()==s.view.window", "mouse selection reaches a visible file group")
++        mouse_selection = self.lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; return {selected=s.view.selected_id,active_match=s.selected_id,preview_line=s.preview.last_preview.target_line,focus=vim.api.nvim_get_current_win()==s.view.window}")
++        if mouse_selection["selected"] != mouse_target["id"] or not mouse_selection["focus"]:
++            raise AssertionError(f"mouse selection did not select the visible Search group while retaining focus: {mouse_selection}")
++
++        self.phase = "action-palette"
++        self.input("P")
++        self.wait_screen("Actions · Enter")
++        self.prompt("/", "open buffers", "Filter actions:")
++        self.wait_screen("Search open buffers")
++        palette_state = self.lua("local p=_G.wb10_controller.palette.active[vim.api.nvim_get_current_tabpage()]; local lines=vim.api.nvim_buf_get_lines(p.view.buffer,0,-1,false); return {lines=lines,items=p.view.model.items,reason=p.view.model.items[1] and p.view.model.items[1].detail}")
++        if not palette_state["items"] or "WB-18" not in (palette_state["reason"] or ""):
++            raise AssertionError(f"palette hid the planned open-buffer capability reason: {palette_state}")
++        self.input("q")
++        self.wait_lua("return _G.wb10_controller.palette:status().active==0", "palette disposal")
++
++        self.phase = "open-return-resume"
++        self.lua("vim.api.nvim_set_current_win(_G.wb10_view.window)")
++        open_ready = self.lua("local v=_G.wb10_view; local w=v.window; local m=vim.fn.maparg('o','n',false,true); return {window=w,valid=w and vim.api.nvim_win_is_valid(w),current=vim.api.nvim_get_current_win(),buffer=w and vim.api.nvim_win_get_buf(w),view_buffer=v.buffer,map_desc=m.desc,map_callback=type(m.callback),mode=vim.api.nvim_get_mode().mode}")
++        if not open_ready["valid"] or open_ready["buffer"] != open_ready["view_buffer"] or "Open selected" not in (open_ready["map_desc"] or ""):
++            raise AssertionError(f"Search open key was not mounted in its native view: {open_ready}")
++        self.input("o")
++        self.wait_lua("return _G.wb10_nav:status().navigation_entries==1", "committed search navigation")
++        opened = self.lua("local wins=vim.api.nvim_tabpage_list_wins(0); local target; for _,w in ipairs(wins) do local b=vim.api.nvim_win_get_buf(w); if vim.api.nvim_buf_get_name(b)==_G.wb10_target_path then target={win=w,buf=b,cursor=vim.api.nvim_win_get_cursor(w)} end end; return target")
++        if not opened or opened["cursor"][0] > 3:
++            raise AssertionError(f"selected result did not open at its reported location: {opened}")
++        self.lua("vim.api.nvim_set_current_win(_G.wb10_view.window)")
++        self.input("R")
++        self.wait_lua("return vim.api.nvim_get_current_buf()==_G.wb10_origin_buf", "return to modified search origin")
++        returned = self.lua("return {modified=vim.bo[_G.wb10_origin_buf].modified,line=vim.api.nvim_buf_get_lines(_G.wb10_origin_buf,0,1,false)[1],jump_same=vim.deep_equal(_G.wb10_jump_before,vim.fn.getjumplist(_G.wb10_origin_win)),cwd=vim.fn.getcwd()}")
++        if not returned["modified"] or returned["line"] != "USER MODIFIED ORIGIN":
++            raise AssertionError(f"search navigation damaged the modified origin: {returned}")
++        if not returned["jump_same"]:
++            raise AssertionError(f"search preview/open changed the origin jumplist: {returned}")
++
++        query_id = first_state["summary"]["id"]
++        self.lua("vim.api.nvim_set_current_win(_G.wb10_view.window)")
++        self.input("q")
++        self.wait_lua("return _G.wb10_controller:status().active_views==0", "Search view disposal")
++        reopened = self.lua("local v=assert(_G.wb10_controller:open({workspace=_G.wb10_workspace,focus=true})); _G.wb10_view=v; local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; return {query=s.query,id=s.investigation.current.result_id,selected=s.selected_id~=nil,phase=s.phase}")
++        self.wait_screen("Query: needle")
++        if reopened["query"] != "needle" or reopened["id"] != query_id or not reopened["selected"]:
++            raise AssertionError(f"reopening Search did not resume its query and selection: {reopened}")
++
++        self.phase = "search-error-and-empty-states"
++        self.input("l")
++        self.prompt("/", "[", "Search folder:")
++        self.wait_lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; local e=s.investigation.current; return _G.wb10_store:summary(e.result_id).status=='error'", "invalid-regex error state")
++        self.wait_screen("Search failed")
++        error_screen = self.grid.snapshot()["text"]
++        (self.output / "invalid-regex-screen.txt").write_text("\n".join(error_screen) + "\n", encoding="utf-8")
++        regex_error = self.lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; local r=_G.wb10_store:summary(s.investigation.current.result_id); return {fixed=s.flags.fixed,status=r.status,error=r.error and r.error.code}")
++        if regex_error["fixed"] or regex_error["status"] != "error":
++            raise AssertionError(f"invalid regex did not reach an explicit Search error state: {regex_error}")
++        self.input("l")
++        self.prompt("/", "WB10_NO_MATCH_SENTINEL", "Search folder:")
++        self.wait_lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; local r=_G.wb10_store:summary(s.investigation.current.result_id); return r.status=='complete' and r.item_count==0", "complete no-match state")
++        self.wait_screen("No matches")
++        no_match_screen = self.grid.snapshot()["text"]
++        (self.output / "no-match-screen.txt").write_text("\n".join(no_match_screen) + "\n", encoding="utf-8")
++
++        self.phase = "debounce-cancel"
++        self.prompt("/", "needle", "Search folder:")
++        self.input("x")
++        self.wait_lua("local s=_G.wb10_controller.active[vim.api.nvim_get_current_tabpage()]; return s.phase=='Cancelled' and s.request==nil", "cancel visible search debounce")
++        self.wait_screen("State: Cancelled")
++        final = self.lua("local c=_G.wb10_controller; local s=c.active[vim.api.nvim_get_current_tabpage()]; local r=_G.wb10_store:summary(s.investigation.current.result_id); return {phase=s.phase,query=s.query,history=#s.investigation.history,provider=_G.wb10_provider:status(),layout=_G.wb10_layout:status(),result=r,dirty=vim.bo[_G.wb10_dirty_buf].modified,dirty_line=vim.api.nvim_buf_get_lines(_G.wb10_dirty_buf,0,1,false)[1],cwd=vim.fn.getcwd(),cwd_expected=_G.wb10_cwd,origin=vim.api.nvim_buf_get_lines(_G.wb10_origin_buf,0,1,false)[1]}")
++        if final["provider"]["active_requests"] != 0 or final["layout"]["active_views"] != 1:
++            raise AssertionError(f"Search teardown/cancel retained live work: {final}")
++        cancelled_grid_text = self.grid.snapshot()["text"]
++        (self.output / "cancelled-screen.txt").write_text("\n".join(cancelled_grid_text) + "\n", encoding="utf-8")
++        cleanup = self.lua("local c=_G.wb10_controller; c:dispose(); _G.wb10_nav:dispose(); _G.wb10_provider:dispose(); _G.wb10_store:dispose(); _G.wb10_layout:dispose(); return {controller_views=c:status().active_views,provider_requests=_G.wb10_provider:status().active_requests,layout_views=_G.wb10_layout:status().active_views,dirty=vim.bo[_G.wb10_dirty_buf].modified,origin=vim.api.nvim_buf_get_lines(_G.wb10_origin_buf,0,1,false)[1]}")
++        if cleanup["controller_views"] != 0 or cleanup["provider_requests"] != 0 or cleanup["layout_views"] != 0:
++            raise AssertionError(f"Search disposal retained owned UI or provider work: {cleanup}")
++        if not cleanup["dirty"] or cleanup["origin"] != "USER MODIFIED ORIGIN":
++            raise AssertionError(f"Search disposal damaged editor-owned buffers: {cleanup}")
++        return {
++            "grid": f"{self.cols}x{self.rows}",
++            "view_layout": first_state["view_mode"],
++            "scope": "folder:A",
++            "empty_query_no_scan": True,
++            "debounce_state_visible": True,
++            "invalid_regex_state": {"status": regex_error["status"], "error": regex_error["error"], "visible": "Search failed" in "\n".join(error_screen)},
++            "no_matches_state": {"status": "complete", "count": 0, "visible": "No matches" in "\n".join(no_match_screen)},
++            "cwd_unchanged": final["cwd"] == final["cwd_expected"],
++            "partial_results_visible": first_state["summary"]["status"] == "partial",
++            "preview_source": first_state["preview"]["source"],
++            "dirty_buffer_preserved": final["dirty"] and final["dirty_line"].startswith("USER EDITED"),
++            "palette_unavailable_reason": palette_state["reason"],
++            "mouse_selected_file_group": mouse_selection["selected"] == mouse_target["id"] and mouse_selection["focus"],
++            "navigation_returned": returned["line"] == "USER MODIFIED ORIGIN",
++            "search_resumed": reopened["id"] == query_id and reopened["query"] == "needle",
++            "first_shell_ms": round(self.first_shell_ms or 0, 3),
++            "first_result_ms": round(first_result_ms, 3),
++            "final": {
++                "phase": final["phase"],
++                "query": final["query"],
++                "history": final["history"],
++                "result_status": final["result"]["status"],
++                "provider_requests": final["provider"]["active_requests"],
++                "active_layout_views": final["layout"]["active_views"],
++                "cwd_unchanged": final["cwd"] == final["cwd_expected"],
++                "dirty_buffer_preserved": final["dirty"] and final["dirty_line"].startswith("USER EDITED"),
++            },
++            "disposed": cleanup,
++            "empty_query_screen_artifact": "empty-query-screen.txt",
++            "invalid_regex_screen_artifact": "invalid-regex-screen.txt",
++            "no_match_screen_artifact": "no-match-screen.txt",
++            "cancelled_screen_artifact": "cancelled-screen.txt",
++        }
++
++    def _ui_loop(self):
++        try:
++            assert self.ui is not None
++            self.ui.run_loop(lambda _method, _args: None, self.grid.notify)
++        except (EOFError, OSError):
++            if self.proc is not None and self.proc.poll() is None:
++                with self.grid.condition:
++                    self.grid.callback_error = "RPC UI disconnected while Neovim remained active"
++                    self.grid.condition.notify_all()
++
++    def _cleanup(self):
++        if self.proc and self.proc.poll() is None and self.control is not None:
++            try:
++                self.control.command("qa!", async_=True)
++            except Exception:
++                pass
++            try:
++                self.proc.wait(timeout=3)
++            except subprocess.TimeoutExpired:
++                self.proc.terminate()
++        if self.proc and self.proc.poll() is None:
++            try:
++                self.proc.wait(timeout=2)
++            except subprocess.TimeoutExpired:
++                self.proc.kill()
++        if self.proc:
++            self.returncode = self.proc.wait(timeout=3)
++            self.child_reaped = True
++        for session in (self.control, self.ui):
++            if session is not None:
++                try:
++                    session.close()
++                except Exception:
++                    pass
++        if self.thread:
++            self.thread.join(timeout=1)
++        Path(self.socket).unlink(missing_ok=True)
++        if self.xdg:
++            self.xdg.cleanup()
++        if self.fixture:
++            self.fixture.cleanup()
++
++    def _write_artifacts(self):
++        self.output.mkdir(parents=True, exist_ok=True)
++        snapshot = self.grid.snapshot()
++        (self.output / "ui-grid.json").write_text(json.dumps(snapshot, indent=2, default=str) + "\n")
++        (self.output / "screen.txt").write_text("\n".join(snapshot["text"]) + "\n")
++        version = subprocess.run([self.nvim, "--version"], text=True, capture_output=True, timeout=3, check=False)
++        metadata = {
++            "nvim": self.nvim,
++            "nvim_version": version.stdout.splitlines()[0] if version.stdout else "unavailable",
++            "grid": f"{self.cols}x{self.rows}",
++            "command": self.command,
++            "environment": {"workbench_head": git_head(ROOT)},
++            "returncode": self.returncode,
++            "child_reaped": self.child_reaped,
++            "failure": self.failure,
++            "phase": self.phase,
++            "outcome": self.outcome,
++        }
++        (self.output / ("failure.json" if self.failure else "result.json")).write_text(json.dumps(metadata, indent=2) + "\n")
++
++    def run(self):
++        try:
++            self._start()
++            self.outcome = self._exercise()
++            return self.outcome
++        except Exception as error:
++            self.failure = f"{type(error).__name__}: {error}"
++            raise
++        finally:
++            self._cleanup()
++            self._write_artifacts()
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--nvim", default="nvim")
++    parser.add_argument("--grid-sizes", default="120x35,60x20")
++    parser.add_argument("--output-root", type=Path, default=ROOT / ".test-output" / "e2e" / "wb10")
++    args = parser.parse_args()
++    for cols, rows in parse_grids(args.grid_sizes):
++        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
++        output = args.output_root / f"{stamp}-{cols}x{rows}-{secrets.token_hex(3)}"
++        run = Run(args.nvim, cols, rows, output)
++        try:
++            result = run.run()
++        except Exception as error:
++            print(f"WB-10 Search UI failed at {cols}x{rows}; phase={run.phase}; artifacts: {output}\n{type(error).__name__}: {error}\n{traceback.format_exc()}", file=sys.stderr)
++            return 1
++        print(json.dumps({"artifacts": str(output), **result}, indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

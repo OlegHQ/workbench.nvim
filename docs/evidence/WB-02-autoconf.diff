@@ -1,0 +1,1769 @@
+diff --git a/lua/autoconf/sys/commands/init.lua b/lua/autoconf/sys/commands/init.lua
+index dbf5ef0..edba5d6 100644
+--- a/lua/autoconf/sys/commands/init.lua
++++ b/lua/autoconf/sys/commands/init.lua
+@@ -230,6 +230,37 @@ function M.setup_helix_health_command()
+         -- Analyze plugin dependencies
+         local analyzed_plugins, installed_plugins, missing_plugins, plugin_names = analyze_plugin_dependencies(resolvers)
+ 
++        local feature_lines = { "## Effective Feature State", "" }
++        local completion = require("autoconf.sys.resolvers.editor.completion").status()
++        local editor_lsp = require("autoconf.sys.resolvers.editor.lsp").status()
++        local runtime_lsp = require("autoconf.sys.defaults.lsp").status()
++        local requested = completion.requested
++        table.insert(feature_lines, string.format(
++            "Completion requested: auto=%s, path=%s, preview-insert=%s, keyword-length=%s, snippets=%s",
++            tostring(requested.auto_completion), tostring(requested.path_completion),
++            tostring(requested.preview_insert), tostring(requested.keyword_length), tostring(requested.snippets)
++        ))
++        table.insert(feature_lines, "Completion effective: " .. tostring(completion.effective))
++        table.insert(feature_lines, string.format(
++            "Auto-format requested: %s; effective: %s",
++            tostring(runtime_lsp.format_requested), tostring(runtime_lsp.format_effective)
++        ))
++        local server_states = {}
++        for _, server in ipairs(runtime_lsp.servers) do
++            table.insert(server_states, server.name .. "=" .. tostring(server.enabled))
++        end
++        table.insert(feature_lines, string.format(
++            "LSP requested: %s; configured server state: %s",
++            tostring(runtime_lsp.lsp_requested), #server_states > 0 and table.concat(server_states, ", ") or "none"
++        ))
++        table.insert(feature_lines, string.format(
++            "LSP helpers: auto-hover=%s, auto-signature=%s, messages=%s, progress=%s",
++            tostring(editor_lsp.auto_info), tostring(editor_lsp.auto_signature_help),
++            tostring(editor_lsp.display_messages), tostring(editor_lsp.display_progress_messages)
++        ))
++        table.insert(feature_lines, "Restart required for configured LSP capabilities: " .. tostring(runtime_lsp.restart_required))
++        table.insert(feature_lines, "")
++
+         -- Generate all sections
+         local lines = {}
+ 
+@@ -258,6 +289,10 @@ function M.setup_helix_health_command()
+             table.insert(lines, line)
+         end
+ 
++        for _, line in ipairs(feature_lines) do
++            table.insert(lines, line)
++        end
++
+         -- 5. Legend (moved to end)
+         local legend_lines = generate_legend()
+         for _, line in ipairs(legend_lines) do
+diff --git a/lua/autoconf/sys/defaults/base.lua b/lua/autoconf/sys/defaults/base.lua
+index f3dbadb..f965388 100644
+--- a/lua/autoconf/sys/defaults/base.lua
++++ b/lua/autoconf/sys/defaults/base.lua
+@@ -45,7 +45,9 @@ M.init_comment = function()
+ end
+ 
+ M.init_auto_mkdir = function()
++    local group = vim.api.nvim_create_augroup("AutoconfAutoMkdir", { clear = true })
+     vim.api.nvim_create_autocmd({ "BufWritePre" }, {
++        group = group,
+         callback = function()
+             local dir = vim.fn.expand("<afile>:p:h")
+             if vim.fn.isdirectory(dir) == 0 then
+@@ -56,4 +58,3 @@ M.init_auto_mkdir = function()
+ end
+ 
+ return M
+-
+diff --git a/lua/autoconf/sys/defaults/lsp.lua b/lua/autoconf/sys/defaults/lsp.lua
+index 915ca99..3e6bb48 100644
+--- a/lua/autoconf/sys/defaults/lsp.lua
++++ b/lua/autoconf/sys/defaults/lsp.lua
+@@ -1,155 +1,245 @@
+ local resolvers = require("autoconf.sys.core.resolvers")
++local completion = require("autoconf.sys.resolvers.editor.completion")
++local logger = require("autoconf.sys.core.logger")
+ 
+ local M = {}
+-local capabilities = nil
++local base_capabilities
+ local formatters_by_ft = {}
++local configured_servers = {}
++local lsp_enabled = true
++local format_status = "not requested"
++local blink_status = "pending (setup on first InsertEnter)"
++local deferred_group
++local blink_setup_complete = false
+ 
+-local function on_attach()
+-    for _, value in ipairs(resolvers.on_lsp_attach_keymaps) do
+-        value()
++local function get_base_capabilities()
++    if base_capabilities then return base_capabilities end
++
++    local ok, blink = pcall(require, "blink.cmp")
++    if ok and type(blink.get_lsp_capabilities) == "function" then
++        local caps_ok, caps = pcall(blink.get_lsp_capabilities)
++        if caps_ok and type(caps) == "table" then
++            base_capabilities = caps
++        else
++            logger.warn("Blink LSP capabilities unavailable; using Neovim defaults: " .. tostring(caps))
++        end
++    elseif not ok then
++        logger.warn("blink.cmp is unavailable; configured servers will use Neovim's default LSP capabilities")
+     end
++
++    if not base_capabilities then
++        base_capabilities = vim.lsp.protocol.make_client_capabilities()
++    end
++    return base_capabilities
+ end
+ 
+ local function get_lsp_setup()
+-    local settings = { on_attach = on_attach }
+-    if capabilities then
+-        settings["capabilities"] = capabilities
+-    end
+-    return settings
++    return {
++        on_attach = function()
++            for _, value in ipairs(resolvers.on_lsp_attach_keymaps) do value() end
++        end,
++        capabilities = completion.lsp_capabilities(get_base_capabilities()),
++    }
+ end
+ 
+-local function setup_blink()
+-    local ok, blink = pcall(require, "blink.cmp")
+-    if not ok then
++local function configure_server(server_name, final_config)
++    if vim.lsp.config ~= nil then
++        vim.lsp.config(server_name, final_config)
++        local resolved_config = vim.lsp.config[server_name]
++        if resolved_config and resolved_config.cmd then
++            configured_servers[server_name] = true
++            vim.lsp.enable(server_name, lsp_enabled)
++        end
+         return
+     end
+ 
+-    blink.setup({
+-        keymap = {
+-            preset = "none",
+-            ["<C-space>"] = { "show", "show_documentation", "hide_documentation" },
+-            ["<C-e>"] = { "hide" },
+-            ["<C-p>"] = { "select_prev", "fallback" },
+-            ["<C-n>"] = { "select_next", "fallback" },
+-            ["<Tab>"] = { "select_next", "snippet_forward", "fallback" },
+-            ["<S-Tab>"] = { "select_prev", "snippet_backward", "fallback" },
+-            ["<CR>"] = { "accept", "fallback" },
+-        },
+-        completion = {
+-            list = {
+-                selection = { preselect = false, auto_insert = true },
+-            },
+-            menu = { auto_show = true },
+-            documentation = { auto_show = true, auto_show_delay_ms = 200 },
+-            ghost_text = { enabled = false },
+-        },
+-        sources = {
+-            default = { "lsp", "path", "buffer" },
+-        },
+-        signature = { enabled = true },
+-    })
+-
+-    capabilities = blink.get_lsp_capabilities()
++    local ok, lspconfig = pcall(require, "lspconfig")
++    if not ok then
++        logger.warn("nvim-lspconfig unavailable; cannot configure " .. server_name)
++        return
++    end
++    if lspconfig[server_name] then
++        configured_servers[server_name] = true
++        lspconfig[server_name].setup(final_config)
++        if not lsp_enabled then
++            logger.warn("this Neovim version cannot reversibly disable legacy lspconfig server " .. server_name)
++        end
++    end
+ end
+ 
+ local function setup_languages(languages)
+-    -- Check if we should use the new vim.lsp.config API (Neovim 0.11+)
+-    local use_new_api = vim.lsp.config ~= nil
+-    local lspconfig = nil
+-
+-    if not use_new_api then
+-        -- Fall back to old lspconfig for older Neovim versions
+-        local ok_lspconfig
+-        ok_lspconfig, lspconfig = pcall(require, "lspconfig")
+-        if not ok_lspconfig then
+-            return
+-        end
++    if vim.lsp.config == nil then
++        local ok, lspconfig = pcall(require, "lspconfig")
++        if not ok then return end
+     end
+ 
+     for name, config in pairs(languages) do
+         local formatters = config.formatter
+-        local lsp = config.lsp
+-        if (type(formatters) == "string") then
+-            formatters = { formatters }
+-        end
+-        formatters_by_ft[name] = formatters
++        if type(formatters) == "string" then formatters = { formatters } end
++        if formatters ~= nil then formatters_by_ft[name] = vim.deepcopy(formatters) end
+ 
+-        -- Handle lsp configuration (string or table)
++        local lsp = config.lsp
+         if lsp then
+             local server_name
+             local custom_config = {}
+ 
+             if type(lsp) == "string" then
+-                -- Legacy string format: lsp = "server_name"
+                 server_name = lsp
+             elseif type(lsp) == "table" then
+-                -- New table format: lsp = { server = "name", cmd = {...}, settings = {...}, ... }
+                 server_name = lsp.server
+                 if server_name then
+-                    -- Copy all fields except 'server' into custom_config
+                     for key, value in pairs(lsp) do
+-                        if key ~= "server" then
+-                            custom_config[key] = value
+-                        end
++                        if key ~= "server" then custom_config[key] = value end
+                     end
+                 end
+             end
+ 
+             if server_name then
+-                local base_setup = get_lsp_setup()
+-                -- Merge custom config with base setup (custom config takes precedence)
+-                local final_config = vim.tbl_deep_extend("force", base_setup, custom_config)
+-
+-                if use_new_api then
+-                    -- Merge with runtime/lsp defaults from nvim-lspconfig instead of replacing them.
+-                    vim.lsp.config(server_name, final_config)
+-                    local resolved_config = vim.lsp.config[server_name]
+-                    if resolved_config and resolved_config.cmd then
+-                        vim.lsp.enable(server_name)
+-                    end
+-                else
+-                    -- Use old lspconfig API (backward compatibility)
+-                    if lspconfig[server_name] then
+-                        lspconfig[server_name].setup(final_config)
+-                    end
+-                end
++                local final_config = vim.tbl_deep_extend("force", get_lsp_setup(), custom_config)
++                configure_server(server_name, final_config)
+             end
+         end
+     end
+ end
+ 
+-local function setup_conform()
+-    local ok_conform, conform = pcall(require, "conform")
+-    if not ok_conform then
+-        return
++local function setup_blink()
++    if blink_setup_complete then return true end
++
++    local ok, blink = pcall(require, "blink.cmp")
++    if not ok or type(blink.setup) ~= "function" then
++        blink_status = "unavailable"
++        completion.set_blink_status(blink_status)
++        logger.warn("completion settings are unsupported because blink.cmp.setup is unavailable")
++        return false
+     end
+ 
+-    return conform.setup({ formatters_by_ft = formatters_by_ft, format_on_save = { timeout_ms = 500, lsp_format = "fallback" }, default_format_opts = { lsp_format = "fallback" } })
++    local setup_ok, err = pcall(blink.setup, completion.blink_options())
++    if not setup_ok then
++        blink_status = "setup failed: " .. tostring(err)
++        completion.set_blink_status(blink_status)
++        logger.warn("Blink setup failed; requested completion settings are not effective: " .. tostring(err))
++        return false
++    end
++
++    blink_setup_complete = true
++    blink_status = "setup requested through Blink's one-shot public API; active config has no public getter"
++    completion.set_blink_status(blink_status)
++    return true
++end
++
++local function setup_deferred_blink()
++    if blink_setup_complete then return end
++    deferred_group = deferred_group or vim.api.nvim_create_augroup("AutoconfDeferredCompletion", { clear = true })
++    vim.api.nvim_clear_autocmds({ group = deferred_group })
++    if vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then
++        setup_blink()
++    else
++        vim.api.nvim_create_autocmd("InsertEnter", {
++            group = deferred_group,
++            once = true,
++            callback = setup_blink,
++            desc = "Initialize Blink completion on first insert",
++        })
++    end
++end
++
++local function format_with_conform(bufnr)
++    local ok, conform = pcall(require, "conform")
++    if not ok or type(conform.format) ~= "function" then
++        format_status = "Conform unavailable; LSP fallback requested"
++        return false
++    end
++
++    local opts = { bufnr = bufnr, timeout_ms = 500, lsp_format = "fallback" }
++    local formatters = formatters_by_ft[vim.bo[bufnr].filetype]
++    if formatters ~= nil then opts.formatters = vim.deepcopy(formatters) end
++    local call_ok, result = pcall(conform.format, opts)
++    if not call_ok then
++        format_status = "Conform failed; LSP fallback requested"
++        logger.warn("Conform format failed: " .. tostring(result))
++        return false
++    end
++    format_status = result == false and "Conform found no applicable formatter; LSP fallback requested"
++        or "Conform invoked on demand"
++    return result ~= false
+ end
+ 
+-M.setup = function(languages)
++function M.format_buffer(bufnr)
++    bufnr = bufnr or vim.api.nvim_get_current_buf()
++    if not vim.api.nvim_buf_is_valid(bufnr) or vim.bo[bufnr].buftype ~= "" then return false end
++
++    if format_with_conform(bufnr) then return true end
++    local clients = vim.lsp.get_clients({ bufnr = bufnr, method = "textDocument/formatting" })
++    if #clients == 0 then
++        format_status = "formatting unavailable"
++        return false
++    end
++    local ok, err = pcall(vim.lsp.buf.format, { bufnr = bufnr, timeout_ms = 2000 })
++    if not ok then logger.warn("LSP formatting unavailable: " .. tostring(err)) end
++    if format_status == "Conform unavailable; LSP fallback requested"
++        or format_status == "Conform failed; LSP fallback requested"
++        or format_status == "Conform found no applicable formatter; LSP fallback requested" then
++        format_status = ok and "LSP fallback on demand" or "formatting unavailable"
++    end
++    if ok then format_status = "LSP formatting requested on demand" end
++    return ok
++end
++
++function M.set_lsp_enabled(value)
++    if type(value) ~= "boolean" then return false end
++    lsp_enabled = value
++    vim.g.lsp_enabled = value
++
++    if type(vim.lsp.enable) == "function" then
++        for server_name in pairs(configured_servers) do
++            local ok, err = pcall(vim.lsp.enable, server_name, value)
++            if not ok then logger.warn("could not " .. (value and "enable " or "disable ") .. server_name .. ": " .. tostring(err)) end
++        end
++    elseif not value then
++        logger.warn("this Neovim version cannot reversibly disable configured LSP servers")
++    end
++    return true
++end
++
++function M.setup(languages)
++    setup_languages(languages or {})
+     setup_blink()
+-    setup_languages(languages)
+-    setup_conform()
+ end
+ 
+---- Deferred setup: registers LSP servers immediately but defers blink + conform
+---- to first InsertEnter for faster startup
+-M.setup_deferred = function(languages)
+-    -- LSP server registration is cheap with vim.lsp.config (no require needed)
+-    setup_languages(languages)
+-
+-    -- Defer blink.cmp and conform until first InsertEnter
+-    local deferred_done = false
+-    vim.api.nvim_create_autocmd("InsertEnter", {
+-        once = true,
+-        callback = function()
+-            if deferred_done then return end
+-            deferred_done = true
+-            setup_blink()
+-            setup_conform()
+-        end,
+-    })
++function M.setup_deferred(languages)
++    setup_languages(languages or {})
++    setup_deferred_blink()
++end
++
++function M.status()
++    local servers = {}
++    local restart_required = false
++    for name in pairs(configured_servers) do
++        local enabled = lsp_enabled
++        if type(vim.lsp.is_enabled) == "function" then
++            local ok, value = pcall(vim.lsp.is_enabled, name)
++            if ok then enabled = value end
++        end
++        local config = vim.lsp.config and vim.lsp.config[name]
++        local snippet_support = config and vim.tbl_get(config, "capabilities", "textDocument", "completion", "completionItem", "snippetSupport")
++        if snippet_support ~= nil and snippet_support ~= completion.snippets_enabled() then
++            restart_required = true
++        end
++        table.insert(servers, { name = name, enabled = enabled })
++    end
++    table.sort(servers, function(a, b) return a.name < b.name end)
++    local current_format_status = format_status
++    if vim.g.autoconf_auto_format_requested == true and current_format_status == "not requested" then
++        current_format_status = "armed; Conform is deferred until BufWritePre"
++    end
++    return {
++        lsp_requested = lsp_enabled,
++        servers = servers,
++        format_requested = vim.g.autoconf_auto_format_requested,
++        format_effective = current_format_status,
++        blink_effective = blink_status,
++        restart_required = restart_required,
++    }
+ end
+ 
+ return M
+diff --git a/lua/autoconf/sys/resolvers/command/init.lua b/lua/autoconf/sys/resolvers/command/init.lua
+index 017025b..1e501d2 100644
+--- a/lua/autoconf/sys/resolvers/command/init.lua
++++ b/lua/autoconf/sys/resolvers/command/init.lua
+@@ -239,7 +239,7 @@ M.register_command_resolvers = function()
+     })
+     resolvers.define_command_resolver("goto_reference", {
+         on_lsp_attach = true,
+-        cmd = lsp_cmd("vim.lsp.buf.references")
++        cmd = lsp_cmd("require('autoconf.sys.resolvers.editor.lsp').references")
+     })
+     resolvers.define_command_resolver("goto_implementation", {
+         on_lsp_attach = true,
+diff --git a/lua/autoconf/sys/resolvers/editor/base.lua b/lua/autoconf/sys/resolvers/editor/base.lua
+index cc9a0b0..d35247e 100644
+--- a/lua/autoconf/sys/resolvers/editor/base.lua
++++ b/lua/autoconf/sys/resolvers/editor/base.lua
+@@ -2,6 +2,7 @@ local logger = require("autoconf.sys.core.logger")
+ local builder = require("autoconf.sys.core.resolver_builder")
+ 
+ local M = {}
++local auto_save_group = vim.api.nvim_create_augroup("AutoconfAutoSave", { clear = true })
+ 
+ -- Middle-click paste requires custom keymap setup
+ M.middle_click_paste = builder.boolean_toggle("editor.middle-click-paste", {
+@@ -63,13 +64,15 @@ M.auto_save = function(config)
+         return
+     end
+ 
+-    -- Clear any existing auto-save autocmds
+-    vim.api.nvim_clear_autocmds({ pattern = "*", event = { "FocusLost", "CursorHold" } })
++    -- Replace only Autoconf's own hooks; CursorHold is also used by hover and
++    -- other user/plugin callbacks.
++    vim.api.nvim_clear_autocmds({ group = auto_save_group })
+ 
+     -- Handle focus-lost auto-save
+     local focus_lost = config["focus-lost"]
+     if type(focus_lost) == "boolean" and focus_lost then
+         vim.api.nvim_create_autocmd("FocusLost", {
++            group = auto_save_group,
+             pattern = "*",
+             callback = function()
+                 vim.cmd("silent! wall")
+@@ -83,12 +86,12 @@ M.auto_save = function(config)
+     if type(after_delay) == "table" and after_delay.enable then
+         local timeout = tonumber(after_delay.timeout) or 3000
+         vim.api.nvim_create_autocmd("CursorHold", {
++            group = auto_save_group,
+             pattern = "*",
+             callback = function()
+                 vim.cmd("silent! update")
+             end,
+             desc = "Auto-save after delay",
+-            group = vim.api.nvim_create_augroup("AutoSaveAfterDelay", { clear = true })
+         })
+         vim.opt.updatetime = timeout
+     end
+diff --git a/lua/autoconf/sys/resolvers/editor/completion.lua b/lua/autoconf/sys/resolvers/editor/completion.lua
+index 9d145ad..bf634c1 100644
+--- a/lua/autoconf/sys/resolvers/editor/completion.lua
++++ b/lua/autoconf/sys/resolvers/editor/completion.lua
+@@ -1,41 +1,95 @@
+ local logger = require("autoconf.sys.core.logger")
+ 
+ local M = {}
++local state = {
++    auto_completion = true,
++    path_completion = true,
++    preview_insert = true,
++    keyword_length = 2,
++    snippets = true,
++    blink = "pending (setup on first InsertEnter)",
++}
++
++local function valid_boolean(path, value)
++    if type(value) == "boolean" then return true end
++    logger.resolver_error(path, "must be a boolean, got: " .. type(value))
++    return false
++end
++
++function M.blink_options()
++    -- Blink v1 accepts partial options through its documented setup API.
++    -- Functions keep TOML toggles effective after Blink's one-time setup.
++    return {
++        enabled = function() return state.auto_completion end,
++        completion = {
++            list = {
++                selection = {
++                    preselect = false,
++                    auto_insert = function() return state.preview_insert end,
++                },
++            },
++        },
++        sources = {
++            min_keyword_length = function() return state.keyword_length end,
++            providers = {
++                path = { enabled = function() return state.path_completion end },
++                snippets = { enabled = function() return state.snippets end },
++            },
++        },
++    }
++end
++
++function M.set_blink_status(status)
++    state.blink = status
++end
++
++function M.lsp_capabilities(base)
++    local capabilities = vim.deepcopy(base)
++    local completion = vim.tbl_get(capabilities, "textDocument", "completion", "completionItem")
++    if completion then completion.snippetSupport = state.snippets end
++    return capabilities
++end
++
++function M.snippets_enabled()
++    return state.snippets
++end
++
++function M.status()
++    return {
++        requested = {
++            auto_completion = state.auto_completion,
++            path_completion = state.path_completion,
++            preview_insert = state.preview_insert,
++            keyword_length = state.keyword_length,
++            snippets = state.snippets,
++        },
++        effective = state.blink,
++        restart_required = false,
++    }
++end
+ 
+ 
+ M.path_completion = function(value)
+-    -- Validate that the value is a boolean
+-    if type(value) ~= "boolean" then
+-        logger.resolver_error("editor.path-completion", "must be a boolean, got: " .. type(value))
+-        return
+-    end
++    if not valid_boolean("editor.path-completion", value) then return end
++    state.path_completion = value
+ 
+     if value then
+-        -- Enable path completion using built-in wildmenu
++        -- Preserve Neovim's command-line path completion as well as Blink's
++        -- insert-mode path provider.
+         vim.opt.wildmenu = true
+         vim.opt.wildmode = "longest:full,full"
+         vim.opt.completeopt = "menu,menuone,noselect"
+-
+-        -- blink.cmp has path source enabled by default in sources.default
+-        logger.resolver_success("editor.path-completion", "enabled")
+     else
+         vim.opt.wildmenu = false
+-        logger.resolver_success("editor.path-completion", "disabled")
+     end
++    logger.resolver_success("editor.path-completion", value and "requested; applied when Blink initializes" or "disabled")
+ end
+ 
+ 
+ M.preview_completion_insert = function(value)
+-    -- Validate that the value is a boolean
+-    if type(value) ~= "boolean" then
+-        logger.resolver_error("editor.preview-completion-insert", "must be a boolean, got: " .. type(value))
+-        return
+-    end
+-
+-    -- blink.cmp handles preselect and auto-show via its own config
+-    -- The setup in lsp.lua sets preselect = false and auto_insert = true by default
+-    logger.resolver_success("editor.preview-completion-insert",
+-        value and "instant application enabled" or "manual application")
++    if not valid_boolean("editor.preview-completion-insert", value) then return end
++    state.preview_insert = value
++    logger.resolver_success("editor.preview-completion-insert", value and "preview insertion requested" or "preview insertion disabled")
+ end
+ 
+ 
+@@ -73,16 +127,24 @@ M.completion_trigger_len = function(value)
+         return
+     end
+ 
+-    -- blink.cmp keyword_length is set via its setup config
++    if value < 0 or value % 1 ~= 0 then
++        logger.resolver_error("editor.completion-trigger-len", "must be a non-negative integer")
++        return
++    end
++    state.keyword_length = value
+     logger.resolver_success("editor.completion-trigger-len", tostring(value) .. " characters")
+ end
+ 
+ M.auto_completion = function(value)
+-    if value then
+-        logger.resolver_success("editor.auto-completion", "enabled (requires blink.cmp)")
+-    else
+-        logger.resolver_success("editor.auto-completion", "disabled")
+-    end
++    if not valid_boolean("editor.auto-completion", value) then return end
++    state.auto_completion = value
++    logger.resolver_success("editor.auto-completion", value and "enabled in Blink when initialized" or "disabled in Blink")
++end
++
++M.snippets = function(value)
++    if not valid_boolean("editor.lsp.snippets", value) then return end
++    state.snippets = value
++    logger.resolver_success("editor.lsp.snippets", value and "enabled in Blink and LSP capabilities" or "disabled in Blink and LSP capabilities")
+ end
+ 
+ M.auto_pairs = function(value)
+diff --git a/lua/autoconf/sys/resolvers/editor/formatting.lua b/lua/autoconf/sys/resolvers/editor/formatting.lua
+index babfbea..8c1c5e6 100644
+--- a/lua/autoconf/sys/resolvers/editor/formatting.lua
++++ b/lua/autoconf/sys/resolvers/editor/formatting.lua
+@@ -2,6 +2,10 @@ local logger = require("autoconf.sys.core.logger")
+ local builder = require("autoconf.sys.core.resolver_builder")
+ 
+ local M = {}
++local auto_format_group = vim.api.nvim_create_augroup("AutoconfAutoFormat", { clear = true })
++local trim_whitespace_group = vim.api.nvim_create_augroup("AutoconfTrimWhitespace", { clear = true })
++local trim_final_newlines_group = vim.api.nvim_create_augroup("AutoconfTrimFinalNewlines", { clear = true })
++local final_newline_group = vim.api.nvim_create_augroup("AutoconfFinalNewline", { clear = true })
+ 
+ M.auto_format = function(value)
+     -- Validate that the value is a boolean
+@@ -10,33 +14,22 @@ M.auto_format = function(value)
+         return
+     end
+ 
++    vim.api.nvim_clear_autocmds({ group = auto_format_group })
++    vim.g.autoconf_auto_format_requested = value
++
+     if value then
+-        -- Enable auto-formatting using LSP and conform.nvim if available
+-        local conform_ok, conform = pcall(require, "conform")
+-        if conform_ok then
+-            -- Use conform.nvim for formatting
+-            vim.api.nvim_create_autocmd("BufWritePre", {
+-                pattern = "*",
+-                callback = function(args)
+-                    conform.format({ bufnr = args.buf })
+-                end,
+-                desc = "Auto-format on save using conform.nvim"
+-            })
+-            logger.resolver_success("editor.auto-format", "enabled with conform.nvim")
+-        else
+-            -- Fallback to LSP formatting
+-            vim.api.nvim_create_autocmd("BufWritePre", {
+-                pattern = "*",
+-                callback = function()
+-                    vim.lsp.buf.format({ timeout_ms = 2000 })
+-                end,
+-                desc = "Auto-format on save using LSP"
+-            })
+-            logger.resolver_success("editor.auto-format", "enabled with LSP formatting")
+-        end
++        vim.api.nvim_create_autocmd("BufWritePre", {
++            group = auto_format_group,
++            pattern = "*",
++            callback = function(args)
++                if not vim.api.nvim_buf_is_valid(args.buf) or vim.bo[args.buf].buftype ~= "" then return end
++                require("autoconf.sys.defaults.lsp").format_buffer(args.buf)
++            end,
++            desc = "Autoconf format on save (lazy Conform/LSP)",
++        })
++        logger.resolver_success("editor.auto-format", "enabled with one lazy save hook")
+     else
+-        -- Disable auto-formatting by clearing the autocommand
+-        vim.api.nvim_clear_autocmds({ pattern = "*", event = "BufWritePre" })
++        vim.api.nvim_clear_autocmds({ group = auto_format_group })
+         logger.resolver_success("editor.auto-format", "disabled")
+     end
+ end
+@@ -49,8 +42,10 @@ M.trim_trailing_whitespace = function(value)
+     end
+ 
+     if value then
++        vim.api.nvim_clear_autocmds({ group = trim_whitespace_group })
+         -- Trim trailing whitespace on save
+         vim.api.nvim_create_autocmd("BufWritePre", {
++            group = trim_whitespace_group,
+             pattern = "*",
+             callback = function()
+                 local save_cursor = vim.fn.getpos(".")
+@@ -61,6 +56,7 @@ M.trim_trailing_whitespace = function(value)
+         })
+         logger.resolver_success("editor.trim-trailing-whitespace", "enabled")
+     else
++        vim.api.nvim_clear_autocmds({ group = trim_whitespace_group })
+         logger.resolver_success("editor.trim-trailing-whitespace", "disabled")
+     end
+ end
+@@ -73,8 +69,10 @@ M.trim_final_newlines = function(value)
+     end
+ 
+     if value then
++        vim.api.nvim_clear_autocmds({ group = trim_final_newlines_group })
+         -- Trim final newlines on save
+         vim.api.nvim_create_autocmd("BufWritePre", {
++            group = trim_final_newlines_group,
+             pattern = "*",
+             callback = function()
+                 local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+@@ -94,6 +92,7 @@ M.trim_final_newlines = function(value)
+         })
+         logger.resolver_success("editor.trim-final-newlines", "enabled")
+     else
++        vim.api.nvim_clear_autocmds({ group = trim_final_newlines_group })
+         logger.resolver_success("editor.trim-final-newlines", "disabled")
+     end
+ end
+@@ -107,9 +106,11 @@ M.insert_final_newline = function(value)
+     end
+ 
+     if value then
++        vim.api.nvim_clear_autocmds({ group = final_newline_group })
+         -- Add final newline on save
+         vim.opt.fixendofline = true
+         vim.api.nvim_create_autocmd("BufWritePre", {
++            group = final_newline_group,
+             pattern = "*",
+             callback = function()
+                 local lines = vim.api.nvim_buf_get_lines(0, -2, -1, false)
+@@ -121,6 +122,7 @@ M.insert_final_newline = function(value)
+         })
+         logger.resolver_success("editor.insert-final-newline", "enabled")
+     else
++        vim.api.nvim_clear_autocmds({ group = final_newline_group })
+         vim.opt.fixendofline = false
+         logger.resolver_success("editor.insert-final-newline", "disabled")
+     end
+diff --git a/lua/autoconf/sys/resolvers/editor/init.lua b/lua/autoconf/sys/resolvers/editor/init.lua
+index ec7af46..54a1a60 100644
+--- a/lua/autoconf/sys/resolvers/editor/init.lua
++++ b/lua/autoconf/sys/resolvers/editor/init.lua
+@@ -70,7 +70,10 @@ M.register_editor_resolvers = function()
+     resolvers.define_resolver("editor.bufferline", statusline.bufferline)
+     resolvers.define_resolver("editor.statusline", statusline.statusline)
+ 
+-    -- LSP resolvers (auto-registered: enable, display-messages, display-progress-messages, snippets)
++    -- LSP toggles and helpers
++    resolvers.define_resolver("editor.lsp.display-messages", lsp.display_messages)
++    resolvers.define_resolver("editor.lsp.display-progress-messages", lsp.display_progress_messages)
++    resolvers.define_resolver("editor.lsp.snippets", lsp.snippets)
+     resolvers.define_resolver("editor.auto-info", lsp.auto_info)
+     resolvers.define_resolver("editor.popup-border", lsp.popup_border)
+     resolvers.define_resolver("editor.lsp.auto-signature-help", lsp.auto_signature_help)
+diff --git a/lua/autoconf/sys/resolvers/editor/lsp.lua b/lua/autoconf/sys/resolvers/editor/lsp.lua
+index 64e0d4a..eca18a2 100644
+--- a/lua/autoconf/sys/resolvers/editor/lsp.lua
++++ b/lua/autoconf/sys/resolvers/editor/lsp.lua
+@@ -1,11 +1,19 @@
+ local logger = require("autoconf.sys.core.logger")
+ local builder = require("autoconf.sys.core.resolver_builder")
++local completion = require("autoconf.sys.resolvers.editor.completion")
+ 
+ local M = {}
+-
+-local float_opts = {
+-    hover = {},
+-    signature_help = {},
++local float_opts = { hover = {}, signature_help = {} }
++local auto_info_group = vim.api.nvim_create_augroup("AutoconfAutoInfo", { clear = true })
++local signature_help_group = vim.api.nvim_create_augroup("AutoconfAutoSignatureHelp", { clear = true })
++local inlay_hint_group = vim.api.nvim_create_augroup("AutoconfInlayHints", { clear = true })
++local inlay_hint_buffers = {}
++local handler_owners = {}
++local state = {
++    auto_info = false,
++    auto_signature_help = false,
++    display_messages = false,
++    display_progress_messages = false,
+ }
+ 
+ function M.hover()
+@@ -17,210 +25,181 @@ function M.signature_help()
+ end
+ 
+ M.auto_info = function(value)
+-    -- Validate that the value is a boolean
+     if type(value) ~= "boolean" then
+         logger.resolver_error("editor.auto-info", "must be a boolean, got: " .. type(value))
+         return
+     end
+ 
++    vim.api.nvim_clear_autocmds({ group = auto_info_group })
++    state.auto_info = value
+     if value then
+         float_opts.hover.border = float_opts.hover.border or "rounded"
+         float_opts.hover.focusable = false
+         float_opts.hover.style = "minimal"
+-
+-        -- Auto-show hover info on cursor hold
+         vim.api.nvim_create_autocmd("CursorHold", {
+-            pattern = "*",
+-            callback = function()
+-                local clients = vim.lsp.get_clients({ bufnr = 0 })
+-                if #clients > 0 then
+-                    M.hover()
+-                end
++            group = auto_info_group,
++            callback = function(args)
++                if #vim.lsp.get_clients({ bufnr = args.buf }) > 0 then M.hover() end
+             end,
+-            desc = "Auto-show hover info"
++            desc = "Autoconf auto hover",
+         })
+-
+-        logger.resolver_success("editor.auto-info", "enabled with LSP hover")
++        logger.resolver_success("editor.auto-info", "enabled with scoped LSP hover")
+     else
+-        -- Disable auto-info
+-        vim.api.nvim_clear_autocmds({ pattern = "*", event = "CursorHold" })
+         logger.resolver_success("editor.auto-info", "disabled")
+     end
+ end
+ 
+ M.popup_border = function(value)
+-    -- Validate that the value is a string
+     if type(value) ~= "string" then
+         logger.resolver_error("editor.popup-border", "must be a string, got: " .. type(value))
+         return
+     end
+ 
+     local border_style = value == "none" and "none" or "rounded"
+-
+     float_opts.hover.border = border_style
+     float_opts.signature_help.border = border_style
+-
+-    -- Configure diagnostic borders
+-    vim.diagnostic.config({
+-        float = {
+-            border = border_style,
+-        },
+-    })
+-
++    vim.diagnostic.config({ float = { border = border_style } })
+     logger.resolver_success("editor.popup-border", value)
+ end
+ 
+--- LSP enable/disable resolver (auto-registered)
+ M.enable = builder.boolean_toggle("editor.lsp.enable", {
+-    on = function()
+-        vim.g.lsp_enabled = true
+-    end,
+-    off = function()
+-        vim.g.lsp_enabled = false
+-        -- Stop all LSP clients
+-        for _, client in pairs(vim.lsp.get_clients()) do
+-            client.stop()
++    on = function() require("autoconf.sys.defaults.lsp").set_lsp_enabled(true) end,
++    off = function() require("autoconf.sys.defaults.lsp").set_lsp_enabled(false) end,
++})
++
++local function set_handler_enabled(method, enabled)
++    vim.lsp.handlers = vim.lsp.handlers or {}
++    local owner = handler_owners[method]
++    local current = vim.lsp.handlers[method]
++
++    if enabled then
++        if not owner then return true end
++        if current ~= owner.wrapper then
++            handler_owners[method] = nil
++            return false
+         end
++        vim.lsp.handlers[method] = owner.original
++        handler_owners[method] = nil
++        return true
+     end
+-})
+ 
+--- Display LSP messages resolver (auto-registered)
+-M.display_messages = builder.boolean_toggle("editor.lsp.display-messages", {
+-    on = function()
+-        -- Enable LSP messages (default behavior)
+-        vim.lsp.handlers["window/showMessage"] = vim.lsp.handlers["window/showMessage"]
+-    end,
+-    off = function()
+-        -- Disable LSP messages by overriding handler to no-op
+-        vim.lsp.handlers["window/showMessage"] = function() end
++    if owner then
++        if current == owner.wrapper then return true end
++        -- Do not replace a handler installed by a user or another plugin.
++        handler_owners[method] = nil
++        return false
+     end
+-})
+ 
+--- Display progress messages resolver (auto-registered)
+-M.display_progress_messages = builder.boolean_toggle("editor.lsp.display-progress-messages", {
+-    on = function()
+-        vim.g.lsp_progress_enabled = true
+-    end,
+-    off = function()
+-        vim.g.lsp_progress_enabled = false
+-        -- Override progress handler to no-op
+-        vim.lsp.handlers["$/progress"] = function() end
++    local record = { original = current, wrapper = function() end }
++    vim.lsp.handlers[method] = record.wrapper
++    handler_owners[method] = record
++    return true
++end
++
++local function message_toggle(path, method, value, status_key)
++    if type(value) ~= "boolean" then
++        logger.resolver_error(path, "must be a boolean, got: " .. type(value))
++        return
+     end
+-})
++    local owned = set_handler_enabled(method, value)
++    state[status_key] = value
++    if owned then
++        logger.resolver_success(path, value and "enabled" or "disabled")
++    else
++        logger.warn(path .. " could not change the handler because another owner replaced it")
++    end
++end
++
++M.display_messages = function(value)
++    message_toggle("editor.lsp.display-messages", "window/showMessage", value, "display_messages")
++end
++
++M.display_progress_messages = function(value)
++    message_toggle("editor.lsp.display-progress-messages", "$/progress", value, "display_progress_messages")
++end
+ 
+--- Auto signature help resolver
+ M.auto_signature_help = function(value)
+     if type(value) ~= "boolean" then
+         logger.resolver_error("editor.lsp.auto-signature-help", "must be a boolean, got: " .. type(value))
+         return
+     end
+ 
++    vim.api.nvim_clear_autocmds({ group = signature_help_group })
++    state.auto_signature_help = value
+     if value then
+-        -- Enable auto signature help on cursor hold in insert mode
+         vim.api.nvim_create_autocmd("CursorHoldI", {
+-            pattern = "*",
+-            callback = function()
+-                local clients = vim.lsp.get_clients({ bufnr = 0 })
+-                if #clients > 0 then
+-                    M.signature_help()
+-                end
++            group = signature_help_group,
++            callback = function(args)
++                if #vim.lsp.get_clients({ bufnr = args.buf }) > 0 then M.signature_help() end
+             end,
+-            desc = "Auto-show signature help"
++            desc = "Autoconf auto signature help",
+         })
+         logger.resolver_success("editor.lsp.auto-signature-help", "enabled")
+     else
+-        -- Disable auto signature help
+-        vim.api.nvim_clear_autocmds({ pattern = "*", event = "CursorHoldI" })
+         logger.resolver_success("editor.lsp.auto-signature-help", "disabled")
+     end
+ end
+ 
+--- Display inlay hints resolver
+ M.display_inlay_hints = function(value)
+     if type(value) ~= "boolean" then
+         logger.resolver_error("editor.lsp.display-inlay-hints", "must be a boolean, got: " .. type(value))
+         return
+     end
+ 
+-    if value then
+-        -- Enable inlay hints (Neovim 0.10+)
+-        if vim.lsp.inlay_hint then
+-            vim.api.nvim_create_autocmd("LspAttach", {
+-                callback = function(args)
+-                    local client = vim.lsp.get_client_by_id(args.data.client_id)
+-                    if client and client.server_capabilities.inlayHintProvider then
+-                        vim.lsp.inlay_hint.enable(true, { bufnr = args.buf })
+-                    end
+-                end,
+-                desc = "Enable inlay hints on LSP attach"
+-            })
+-            logger.resolver_success("editor.lsp.display-inlay-hints", "enabled")
+-        else
+-            logger.resolver_error("editor.lsp.display-inlay-hints", "requires Neovim 0.10+")
+-        end
++    vim.api.nvim_clear_autocmds({ group = inlay_hint_group })
++    if value and vim.lsp.inlay_hint then
++        vim.api.nvim_create_autocmd("LspAttach", {
++            group = inlay_hint_group,
++            callback = function(args)
++                local client = vim.lsp.get_client_by_id(args.data.client_id)
++                if client and client.server_capabilities.inlayHintProvider then
++                    vim.lsp.inlay_hint.enable(true, { bufnr = args.buf })
++                    inlay_hint_buffers[args.buf] = true
++                end
++            end,
++            desc = "Autoconf enable inlay hints on attach",
++        })
++        logger.resolver_success("editor.lsp.display-inlay-hints", "enabled")
++    elseif value then
++        logger.resolver_error("editor.lsp.display-inlay-hints", "requires Neovim 0.10+")
+     else
+-        -- Disable inlay hints
+-        if vim.lsp.inlay_hint then
+-            vim.lsp.inlay_hint.enable(false)
++        for bufnr in pairs(inlay_hint_buffers) do
++            if vim.api.nvim_buf_is_valid(bufnr) and vim.lsp.inlay_hint then
++                pcall(vim.lsp.inlay_hint.enable, false, { bufnr = bufnr })
++            end
++            inlay_hint_buffers[bufnr] = nil
+         end
+-        logger.resolver_success("editor.lsp.display-inlay-hints", "disabled")
++        logger.resolver_success("editor.lsp.display-inlay-hints", "disabled for Autoconf-owned buffers")
+     end
+ end
+ 
+--- Display signature help docs resolver
+ M.display_signature_help_docs = function(value)
+     if type(value) ~= "boolean" then
+         logger.resolver_error("editor.lsp.display-signature-help-docs", "must be a boolean, got: " .. type(value))
+         return
+     end
+-
+     float_opts.signature_help.border = float_opts.signature_help.border or "rounded"
+     float_opts.signature_help.focusable = false
+     float_opts.signature_help.style = "minimal"
+     float_opts.signature_help.show_documentation = value
+-
+     logger.resolver_success("editor.lsp.display-signature-help-docs", value and "enabled" or "disabled")
+ end
+ 
+--- Snippets resolver (auto-registered)
+-M.snippets = builder.boolean_toggle("editor.lsp.snippets", {
+-    on = function()
+-        vim.g.lsp_snippets_enabled = true
+-    end,
+-    off = function()
+-        vim.g.lsp_snippets_enabled = false
+-        -- Override LSP capabilities to disable snippet support
+-        local original_make_client_capabilities = vim.lsp.protocol.make_client_capabilities
+-        vim.lsp.protocol.make_client_capabilities = function()
+-            local capabilities = original_make_client_capabilities()
+-            capabilities.textDocument.completion.completionItem.snippetSupport = false
+-            return capabilities
+-        end
+-    end
+-})
++M.snippets = completion.snippets
+ 
+--- Goto reference include declaration resolver
+ M.goto_reference_include_declaration = function(value)
+     if type(value) ~= "boolean" then
+         logger.resolver_error("editor.lsp.goto-reference-include-declaration", "must be a boolean, got: " .. type(value))
+         return
+     end
+-
+-    -- Store the setting for use in references function
+     vim.g.lsp_include_declaration = value
+-
+-    -- Override the references function to respect this setting
+-    local original_references = vim.lsp.buf.references
+-    vim.lsp.buf.references = function(context, options)
+-        local new_context = context or {}
+-        new_context.includeDeclaration = value
+-        return original_references(new_context, options)
+-    end
+-
+     logger.resolver_success("editor.lsp.goto-reference-include-declaration", value and "enabled" or "disabled")
+ end
+ 
+--- Display color swatches resolver
++function M.references()
++    return vim.lsp.buf.references({ includeDeclaration = vim.g.lsp_include_declaration ~= false })
++end
++
+ M.display_color_swatches = function(value)
+     if type(value) ~= "boolean" then
+         logger.resolver_error("editor.lsp.display-color-swatches", "must be a boolean, got: " .. type(value))
+@@ -228,26 +207,33 @@ M.display_color_swatches = function(value)
+     end
+ 
+     if value then
+-        -- Enable color swatches - try to use nvim-colorizer or similar
+         local colorizer_ok, colorizer = pcall(require, "colorizer")
+         if colorizer_ok then
+             colorizer.setup()
+             logger.resolver_success("editor.lsp.display-color-swatches", "enabled with colorizer")
+         else
+-            -- Fallback: enable basic color highlighting
+-            vim.g.lsp_color_swatches_enabled = true
+-            logger.resolver_success("editor.lsp.display-color-swatches", "enabled (basic)")
++            vim.g.lsp_color_swatches_enabled = false
++            logger.warn("editor.lsp.display-color-swatches is unsupported: colorizer is not installed")
+         end
+     else
+-        -- Disable color swatches
+         vim.g.lsp_color_swatches_enabled = false
+         local colorizer_ok, colorizer = pcall(require, "colorizer")
+-        if colorizer_ok then
++        if colorizer_ok and type(colorizer.detach_from_buffer) == "function" then
+             colorizer.detach_from_buffer()
+         end
+         logger.resolver_success("editor.lsp.display-color-swatches", "disabled")
+     end
+ end
+ 
+--- LSP-related functions
++function M.status()
++    return {
++        auto_info = state.auto_info,
++        auto_signature_help = state.auto_signature_help,
++        display_messages = state.display_messages,
++        display_progress_messages = state.display_progress_messages,
++        snippets = completion.snippets_enabled(),
++        owned_inlay_hint_buffers = vim.tbl_keys(inlay_hint_buffers),
++    }
++end
++
+ return M
+diff --git a/lua/autoconf/sys/resolvers/editor/ui.lua b/lua/autoconf/sys/resolvers/editor/ui.lua
+index 56e964c..0109049 100644
+--- a/lua/autoconf/sys/resolvers/editor/ui.lua
++++ b/lua/autoconf/sys/resolvers/editor/ui.lua
+@@ -2,6 +2,7 @@ local logger = require("autoconf.sys.core.logger")
+ local builder = require("autoconf.sys.core.resolver_builder")
+ 
+ local M = {}
++local wrap_colorcolumn_state = {}
+ 
+ -- Mouse - maps boolean to vim.opt.mouse value
+ M.mouse = builder.vim_opt_mapped("editor.mouse", "mouse", {
+@@ -137,11 +138,8 @@ M.soft_wrap = function(config)
+         return
+     end
+ 
+-    if not enable then
+-        return
+-    end
+-
+-    -- Set basic wrap settings
++    -- Apply both branches explicitly; `false` must undo settings from a
++    -- previous true configuration rather than silently retaining them.
+     vim.wo.wrap = enable
+     vim.wo.linebreak = enable and config["max-wrap"] ~= 0
+ 
+@@ -153,6 +151,8 @@ M.soft_wrap = function(config)
+         vim.o.showbreak = wrap_indicator
+     elseif enable then
+         vim.o.showbreak = "↪ "
++    else
++        vim.o.showbreak = ""
+     end
+ 
+     -- Handle indent retention
+@@ -169,14 +169,28 @@ M.soft_wrap = function(config)
+ 
+     -- Handle wrap at text width
+     local wrap_at_text_width = config["wrap-at-text-width"]
++    local win = vim.api.nvim_get_current_win()
++    local saved_colorcolumn = wrap_colorcolumn_state[win]
+     if wrap_at_text_width and vim.bo.textwidth > 0 then
+-        vim.wo.colorcolumn = tostring(vim.bo.textwidth)
++        local colorcolumn = tostring(vim.bo.textwidth)
++        if not saved_colorcolumn then
++            saved_colorcolumn = { original = vim.wo[win].colorcolumn }
++            wrap_colorcolumn_state[win] = saved_colorcolumn
++        end
++        vim.wo[win].colorcolumn = colorcolumn
++        saved_colorcolumn.applied = colorcolumn
+     elseif wrap_at_text_width then
+         logger.resolver_warning("editor.soft-wrap", "wrap-at-text-width requires text-width to be set")
++    elseif saved_colorcolumn then
++        -- Restore only while our value is still present; retain later user/plugin
++        -- changes instead of treating them as ours to dispose.
++        if vim.wo[win].colorcolumn == saved_colorcolumn.applied then
++            vim.wo[win].colorcolumn = saved_colorcolumn.original
++        end
++        wrap_colorcolumn_state[win] = nil
+     end
+ 
+     logger.resolver_success("editor.soft-wrap", "configured")
+ end
+ 
+ return M
+-
+diff --git a/tests/fixtures/lsp_probe.py b/tests/fixtures/lsp_probe.py
+new file mode 100644
+index 0000000..7a4e281
+--- /dev/null
++++ b/tests/fixtures/lsp_probe.py
+@@ -0,0 +1,52 @@
++#!/usr/bin/env python3
++"""Tiny stdio LSP server used only by the isolated Autoconf host test."""
++
++from __future__ import annotations
++
++import json
++import sys
++from pathlib import Path
++
++
++def read_message():
++    headers = {}
++    while True:
++        line = sys.stdin.buffer.readline()
++        if not line:
++            return None
++        if line in (b"\r\n", b"\n"):
++            break
++        key, value = line.decode("ascii").split(":", 1)
++        headers[key.lower()] = value.strip()
++    length = int(headers["content-length"])
++    return json.loads(sys.stdin.buffer.read(length))
++
++
++def send(message):
++    payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
++    sys.stdout.buffer.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii") + payload)
++    sys.stdout.buffer.flush()
++
++
++capture = Path(sys.argv[1])
++while message := read_message():
++    method = message.get("method")
++    request_id = message.get("id")
++    if method == "initialize":
++        item = (
++            message.get("params", {})
++            .get("capabilities", {})
++            .get("textDocument", {})
++            .get("completion", {})
++            .get("completionItem", {})
++        )
++        capture.write_text(json.dumps({"snippetSupport": item.get("snippetSupport")}))
++        send({
++            "jsonrpc": "2.0",
++            "id": request_id,
++            "result": {"capabilities": {"textDocumentSync": 1}},
++        })
++    elif method == "shutdown":
++        send({"jsonrpc": "2.0", "id": request_id, "result": None})
++    elif request_id is not None:
++        send({"jsonrpc": "2.0", "id": request_id, "result": None})
+diff --git a/tests/fixtures/uppercase.py b/tests/fixtures/uppercase.py
+new file mode 100644
+index 0000000..a51e0fe
+--- /dev/null
++++ b/tests/fixtures/uppercase.py
+@@ -0,0 +1,13 @@
++#!/usr/bin/env python3
++"""Minimal stdin-to-stdout formatter used by the installed Conform integration test."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++data = sys.stdin.read()
++if len(sys.argv) > 1:
++    with Path(sys.argv[1]).open("a", encoding="utf-8") as output:
++        output.write("called\n")
++sys.stdout.write(data.upper())
+diff --git a/tests/host.sh b/tests/host.sh
+new file mode 100644
+index 0000000..c74414b
+--- /dev/null
++++ b/tests/host.sh
+@@ -0,0 +1,10 @@
++#!/bin/sh
++set -eu
++
++SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
++PLUGIN_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
++HOST_ROOT=$(CDPATH= cd -- "$PLUGIN_ROOT/../../../../" && pwd)
++NVIM_BIN=${NVIM_BIN:-$(command -v nvim)}
++
++"$NVIM_BIN" --headless -u "$HOST_ROOT/init.lua" -i NONE -n \
++    -c "lua dofile('$SCRIPT_DIR/host_integration.lua')" -c 'qa!'
+diff --git a/tests/host_integration.lua b/tests/host_integration.lua
+new file mode 100644
+index 0000000..26a21f3
+--- /dev/null
++++ b/tests/host_integration.lua
+@@ -0,0 +1,167 @@
++local function fail(message)
++    error("Autoconf host integration: " .. message)
++end
++
++local function assert_true(value, message)
++    if not value then fail(message) end
++end
++
++local function group_count(event, group)
++    return #vim.api.nvim_get_autocmds({ event = event, group = group })
++end
++
++local source = debug.getinfo(1, "S").source:sub(2)
++local tests_root = vim.fn.fnamemodify(source, ":p:h")
++local plugin_root = vim.fn.fnamemodify(tests_root, ":h")
++local host_root = vim.fn.fnamemodify(plugin_root, ":h:h:h:h")
++local completion = require("autoconf.sys.resolvers.editor.completion")
++local editor_lsp = require("autoconf.sys.resolvers.editor.lsp")
++local defaults_lsp = require("autoconf.sys.defaults.lsp")
++
++vim.opt.undofile = false
++vim.opt.swapfile = false
++vim.wait(100)
++
++-- LSP capabilities must be registered before first InsertEnter loads Blink UI.
++assert_true(package.loaded["blink.cmp.completion"] == nil, "Blink UI loaded during startup")
++local configured = vim.lsp.config.pyright
++assert_true(configured ~= nil, "configured pyright server is registered")
++assert_true(vim.tbl_get(configured, "capabilities", "textDocument", "completion", "completionItem", "snippetSupport") == true,
++    "Blink snippet capabilities are supplied before InsertEnter")
++assert_true(group_count("InsertEnter", "AutoconfDeferredCompletion") == 1, "only one deferred Blink hook exists")
++assert_true(group_count("BufWritePre", "AutoconfAutoFormat") == 1, "one Autoconf save-format hook exists")
++
++-- Use a real local LSP process to verify the initialize payload, then start an
++-- independently-owned client and prove the Autoconf toggle leaves it alive.
++local python = vim.fn.exepath("python3")
++assert_true(python ~= "", "python3 is required for the local fake LSP")
++local server = tests_root .. "/fixtures/lsp_probe.py"
++local root = vim.fn.tempname()
++vim.fn.mkdir(root, "p")
++vim.fn.writefile({ "root" }, root .. "/.autoconf-root")
++local buffer_path = root .. "/probe.acf"
++vim.fn.writefile({ "probe" }, buffer_path)
++local capture = root .. "/initialize.json"
++local external_capture = root .. "/external-initialize.json"
++local command = { python, server, capture }
++local external_command = { python, server, external_capture }
++
++editor_lsp.snippets(true)
++vim.lsp.config("autoconf_host_probe", {
++    cmd = command,
++    filetypes = { "autoconf_probe" },
++    root_markers = { ".autoconf-root" },
++})
++defaults_lsp.setup_deferred({ autoconf_probe = { lsp = "autoconf_host_probe" } })
++
++local buffer = vim.fn.bufadd(buffer_path)
++vim.fn.bufload(buffer)
++vim.bo[buffer].filetype = "autoconf_probe"
++vim.api.nvim_set_current_buf(buffer)
++vim.api.nvim_exec_autocmds("FileType", { buffer = buffer, modeline = false })
++local attached = vim.wait(5000, function()
++    for _, client in ipairs(vim.lsp.get_clients({ bufnr = buffer })) do
++        if client.name == "autoconf_host_probe" then return true end
++    end
++    return false
++end, 20)
++assert_true(attached, "configured fake LSP attached")
++local initialize_ready = vim.wait(3000, function() return vim.fn.filereadable(capture) == 1 end, 20)
++assert_true(initialize_ready, "fake server captured initialize capabilities")
++local initialize = vim.json.decode(table.concat(vim.fn.readfile(capture), "\n"))
++assert_true(initialize.snippetSupport == true, "client initialize includes Blink snippet support")
++assert_true(package.loaded["blink.cmp.completion"] == nil, "client initialized before completion UI")
++
++local external_id = vim.lsp.start({
++    name = "autoconf_external_probe",
++    cmd = external_command,
++    root_dir = root,
++    capabilities = vim.lsp.protocol.make_client_capabilities(),
++}, { bufnr = buffer })
++assert_true(external_id ~= nil, "independent client starts")
++assert_true(vim.wait(3000, function() return vim.fn.filereadable(external_capture) == 1 end, 20),
++    "independent client initialized")
++
++editor_lsp.enable(false)
++assert_true(vim.wait(3000, function()
++    return vim.lsp.get_client_by_id(external_id) ~= nil
++        and vim.lsp.get_clients({ bufnr = buffer })[1] ~= nil
++        and vim.lsp.get_client_by_id(external_id).name == "autoconf_external_probe"
++end, 20), "external client remains after configured LSP disable")
++editor_lsp.enable(true)
++assert_true(vim.wait(3000, function()
++    for _, client in ipairs(vim.lsp.get_clients({ bufnr = buffer })) do
++        if client.name == "autoconf_host_probe" then return true end
++    end
++    return false
++end, 20), "configured server can be re-enabled")
++assert_true(vim.lsp.get_client_by_id(external_id) ~= nil, "external client remains after re-enable")
++
++-- The actual installed Blink 1.10.2 accepts these documented fields, and
++-- toggles remain live after its one-time setup.
++completion.auto_completion(false)
++completion.path_completion(false)
++completion.preview_completion_insert(false)
++completion.completion_trigger_len(4)
++editor_lsp.snippets(false)
++vim.api.nvim_exec_autocmds("InsertEnter", { modeline = false })
++local blink_config = require("blink.cmp.config")
++assert_true(blink_config.enabled() == false, "auto-completion false reaches Blink")
++assert_true(blink_config.sources.min_keyword_length() == 4, "keyword length reaches Blink")
++assert_true(blink_config.sources.providers.path.enabled() == false, "path source false reaches Blink")
++assert_true(blink_config.sources.providers.snippets.enabled() == false, "snippet source false reaches Blink")
++assert_true(blink_config.completion.list.selection.auto_insert() == false, "preview insertion false reaches Blink")
++assert_true(defaults_lsp.status().restart_required, "snippet capability change reports restart required")
++completion.auto_completion(true)
++completion.path_completion(true)
++completion.preview_completion_insert(true)
++completion.completion_trigger_len(2)
++editor_lsp.snippets(true)
++assert_true(blink_config.enabled() == true, "auto-completion true reaches Blink")
++assert_true(blink_config.sources.min_keyword_length() == 2, "keyword length resets in Blink")
++assert_true(blink_config.sources.providers.path.enabled() == true, "path source re-enabled")
++assert_true(blink_config.sources.providers.snippets.enabled() == true, "snippet source re-enabled")
++assert_true(blink_config.completion.list.selection.auto_insert() == true, "preview insertion re-enabled")
++assert_true(not defaults_lsp.status().restart_required, "restored snippet capability removes restart requirement")
++
++-- Exercise the real Conform API with a temporary formatter, through the one
++-- Autoconf BufWritePre hook; setup contains no second format-on-save hook.
++local conform = require("conform")
++local format_count = root .. "/format-count"
++conform.setup({
++    formatters = {
++        autoconf_probe_upper = {
++            command = python,
++            args = { tests_root .. "/fixtures/uppercase.py", format_count },
++            stdin = true,
++        },
++    },
++})
++defaults_lsp.setup_deferred({ lua = { formatter = "autoconf_probe_upper" } })
++completion.auto_completion(true)
++local save_path = root .. "/format.lua"
++local save_buffer = vim.fn.bufadd(save_path)
++vim.fn.bufload(save_buffer)
++vim.bo[save_buffer].filetype = "lua"
++vim.api.nvim_buf_set_lines(save_buffer, 0, -1, false, { "lower case" })
++vim.api.nvim_set_current_buf(save_buffer)
++vim.api.nvim_buf_call(save_buffer, function() vim.cmd("write!") end)
++assert_true(vim.fn.readfile(save_path)[1] == "LOWER CASE", "real Conform formatter ran during save")
++assert_true(#vim.api.nvim_get_autocmds({ event = "BufWritePre", group = "Conform" }) == 0,
++    "Conform did not install a duplicate save hook")
++
++-- Health output reports requested/effective/restart-required state.
++vim.cmd("AutoconfHealth")
++local health = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
++assert_true(health:find("## Effective Feature State", 1, true) ~= nil, "health includes feature state")
++assert_true(health:find("Completion requested: auto=true", 1, true) ~= nil, "health reports requested completion settings")
++assert_true(health:find("Auto-format requested:", 1, true) ~= nil, "health reports requested/effective formatting")
++assert_true(health:find("Restart required for configured LSP capabilities:", 1, true) ~= nil,
++    "health reports restart requirement")
++
++for _, client in ipairs(vim.lsp.get_clients({ bufnr = buffer })) do
++    if client.name == "autoconf_external_probe" then client:stop(true) end
++end
++editor_lsp.enable(false)
++vim.fn.delete(root, "rf")
++print("autoconf host integration passed on " .. vim.version().major .. "." .. vim.version().minor .. "." .. vim.version().patch)
+diff --git a/tests/minimal_init.lua b/tests/minimal_init.lua
+new file mode 100644
+index 0000000..59af321
+--- /dev/null
++++ b/tests/minimal_init.lua
+@@ -0,0 +1,7 @@
++local source = debug.getinfo(1, "S").source:sub(2)
++local tests_root = vim.fn.fnamemodify(source, ":p:h")
++local plugin_root = vim.fn.fnamemodify(tests_root, ":h")
++vim.o.loadplugins = false
++vim.o.undofile = false
++vim.o.swapfile = false
++vim.opt.runtimepath:prepend(plugin_root)
+diff --git a/tests/optional.lua b/tests/optional.lua
+new file mode 100644
+index 0000000..a490fdf
+--- /dev/null
++++ b/tests/optional.lua
+@@ -0,0 +1,31 @@
++local completion = require("autoconf.sys.resolvers.editor.completion")
++local defaults_lsp = require("autoconf.sys.defaults.lsp")
++
++defaults_lsp.setup_deferred({})
++vim.api.nvim_exec_autocmds("InsertEnter", { modeline = false })
++assert(completion.status().effective == "unavailable", "missing Blink is reported as unsupported")
++
++defaults_lsp.setup_deferred({ lua = { formatter = "not-installed" } })
++local buffer = vim.api.nvim_create_buf(true, false)
++vim.bo[buffer].filetype = "lua"
++vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "local value = 1" })
++assert(defaults_lsp.format_buffer(buffer) == false, "missing Conform and LSP reports formatting unavailable")
++assert(defaults_lsp.status().format_effective == "formatting unavailable",
++    "health state does not claim formatting succeeded without a provider")
++
++local get_clients = vim.lsp.get_clients
++local lsp_format = vim.lsp.buf.format
++local format_calls = 0
++vim.lsp.get_clients = function(filter)
++    if filter.method == "textDocument/formatting" then return { { name = "test_formatter" } } end
++    return {}
++end
++vim.lsp.buf.format = function() format_calls = format_calls + 1 end
++assert(defaults_lsp.format_buffer(buffer) == true, "available LSP formatter is used as fallback")
++assert(format_calls == 1, "LSP fallback executes once")
++assert(defaults_lsp.status().format_effective == "LSP formatting requested on demand",
++    "health identifies the LSP fallback")
++vim.lsp.get_clients = get_clients
++vim.lsp.buf.format = lsp_format
++
++print("autoconf optional-dependency tests passed")
+diff --git a/tests/run.lua b/tests/run.lua
+new file mode 100644
+index 0000000..4a24ac4
+--- /dev/null
++++ b/tests/run.lua
+@@ -0,0 +1,209 @@
++local function equal(actual, expected, message)
++    if actual ~= expected then
++        error((message or "values differ") .. ": expected " .. vim.inspect(expected) .. ", got " .. vim.inspect(actual))
++    end
++end
++
++local function autocmd_count(event, group)
++    return #vim.api.nvim_get_autocmds({ event = event, group = group })
++end
++
++local fake_setup
++local fake_blink = {
++    get_lsp_capabilities = function()
++        local caps = vim.lsp.protocol.make_client_capabilities()
++        caps.textDocument.completion.completionItem.snippetSupport = true
++        return caps
++    end,
++    setup = function(options) fake_setup = options end,
++}
++package.preload["blink.cmp"] = function() return fake_blink end
++
++local completion = require("autoconf.sys.resolvers.editor.completion")
++local formatting = require("autoconf.sys.resolvers.editor.formatting")
++local editor_base = require("autoconf.sys.resolvers.editor.base")
++local editor_lsp = require("autoconf.sys.resolvers.editor.lsp")
++local editor_ui = require("autoconf.sys.resolvers.editor.ui")
++local defaults_lsp = require("autoconf.sys.defaults.lsp")
++
++-- TOML settings must alter Blink's documented option values dynamically.
++local blink_options = completion.blink_options()
++equal(blink_options.enabled(), true, "completion default")
++equal(blink_options.sources.min_keyword_length(), 2, "completion trigger default")
++equal(blink_options.sources.providers.path.enabled(), true, "path source default")
++equal(blink_options.sources.providers.snippets.enabled(), true, "snippet source default")
++completion.auto_completion(false)
++completion.path_completion(false)
++completion.preview_completion_insert(false)
++completion.completion_trigger_len(3)
++editor_lsp.snippets(false)
++equal(blink_options.enabled(), false, "completion false setting")
++equal(blink_options.sources.providers.path.enabled(), false, "path source false setting")
++equal(blink_options.completion.list.selection.auto_insert(), false, "preview insert false setting")
++equal(blink_options.sources.min_keyword_length(), 3, "keyword length setting")
++equal(blink_options.sources.providers.snippets.enabled(), false, "snippet false setting")
++completion.auto_completion(true)
++completion.path_completion(true)
++completion.preview_completion_insert(true)
++completion.completion_trigger_len(2)
++editor_lsp.snippets(true)
++equal(blink_options.enabled(), true, "completion re-enable")
++
++-- LSP capability negotiation precedes completion UI setup and follows snippets.
++vim.lsp.config("autoconf_owned_fixture", { cmd = { "python3", "unused" }, filetypes = { "autoconf_fixture" } })
++local original_enable = vim.lsp.enable
++local enable_calls = {}
++vim.lsp.enable = function(name, enabled)
++    table.insert(enable_calls, { name, enabled })
++end
++editor_lsp.enable(false)
++defaults_lsp.setup_deferred({ autoconf_fixture = { lsp = "autoconf_owned_fixture" } })
++local fixture_config = vim.lsp.config.autoconf_owned_fixture
++equal(vim.tbl_get(fixture_config, "capabilities", "textDocument", "completion", "completionItem", "snippetSupport"), true,
++    "snippet capability present before InsertEnter")
++equal(fake_setup, nil, "Blink UI remains deferred")
++equal(autocmd_count("InsertEnter", "AutoconfDeferredCompletion"), 1, "single deferred completion hook")
++editor_lsp.snippets(false)
++defaults_lsp.setup_deferred({ autoconf_fixture = { lsp = "autoconf_owned_fixture" } })
++fixture_config = vim.lsp.config.autoconf_owned_fixture
++equal(vim.tbl_get(fixture_config, "capabilities", "textDocument", "completion", "completionItem", "snippetSupport"), false,
++    "snippet capability false setting")
++equal(autocmd_count("InsertEnter", "AutoconfDeferredCompletion"), 1, "repeated setup stays idempotent")
++editor_lsp.snippets(true)
++
++-- Disabling LSP only calls enable(false) for configured servers, never stop() on
++-- clients owned by an unrelated plugin.
++local get_clients = vim.lsp.get_clients
++local foreign_stops = 0
++vim.lsp.get_clients = function()
++    return { { name = "foreign", stop = function() foreign_stops = foreign_stops + 1 end } }
++end
++editor_lsp.enable(true)
++editor_lsp.enable(false)
++editor_lsp.enable(true)
++vim.lsp.get_clients = get_clients
++vim.lsp.enable = original_enable
++equal(foreign_stops, 0, "foreign clients are preserved")
++equal(enable_calls[1][1], "autoconf_owned_fixture", "configured server identity")
++equal(enable_calls[1][2], false, "configured server initially disabled")
++equal(enable_calls[#enable_calls][2], true, "configured server re-enabled")
++
++-- Each Autoconf save/hover hook has its own group and never clears foreign hooks.
++local foreign_group = vim.api.nvim_create_augroup("AutoconfTestForeign", { clear = true })
++vim.g.autoconf_test_foreign_save = 0
++vim.g.autoconf_test_foreign_hover = 0
++vim.api.nvim_create_autocmd("BufWritePre", {
++    group = foreign_group,
++    callback = function() vim.g.autoconf_test_foreign_save = vim.g.autoconf_test_foreign_save + 1 end,
++})
++vim.api.nvim_create_autocmd("CursorHold", {
++    group = foreign_group,
++    callback = function() vim.g.autoconf_test_foreign_hover = vim.g.autoconf_test_foreign_hover + 1 end,
++})
++editor_lsp.auto_info(true)
++editor_lsp.auto_signature_help(true)
++editor_lsp.auto_info(false)
++editor_lsp.auto_info(true)
++editor_lsp.auto_info(false)
++editor_lsp.auto_info(true)
++editor_lsp.auto_signature_help(false)
++editor_lsp.auto_signature_help(true)
++editor_lsp.auto_signature_help(false)
++editor_lsp.auto_signature_help(true)
++editor_base.auto_save({ ["focus-lost"] = false, ["after-delay"] = { enable = false } })
++editor_base.auto_save({ ["focus-lost"] = false, ["after-delay"] = { enable = false } })
++equal(autocmd_count("CursorHold", "AutoconfAutoInfo"), 1, "one hover hook after repeated setup")
++equal(autocmd_count("CursorHoldI", "AutoconfAutoSignatureHelp"), 1, "one signature hook after setup")
++equal(autocmd_count("CursorHold", "AutoconfAutoSave"), 0, "disabled delay save has no owned hook")
++
++-- Save before InsertEnter loads Conform only for the relevant format action.
++local format_calls = 0
++package.preload.conform = function()
++    return {
++        format = function(opts)
++            format_calls = format_calls + 1
++            equal(opts.formatters[1], "autoconf_test_formatter", "language formatter routing")
++            vim.api.nvim_buf_set_lines(opts.bufnr, 0, -1, false, { "FORMATTED" })
++            return true
++        end,
++    }
++end
++defaults_lsp.setup_deferred({ lua = { formatter = "autoconf_test_formatter" } })
++formatting.auto_format(true)
++formatting.auto_format(true)
++equal(autocmd_count("BufWritePre", "AutoconfAutoFormat"), 1, "one format hook after repeated setup")
++equal(package.loaded.conform, nil, "Conform is not eagerly loaded")
++local path = vim.fn.tempname() .. ".lua"
++local buffer = vim.api.nvim_create_buf(true, false)
++vim.api.nvim_buf_set_name(buffer, path)
++vim.bo[buffer].filetype = "lua"
++vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "raw" })
++vim.api.nvim_set_current_buf(buffer)
++vim.api.nvim_buf_call(buffer, function() vim.cmd("write!") end)
++equal(format_calls, 1, "format hook runs before first InsertEnter")
++equal(vim.api.nvim_buf_get_lines(buffer, 0, -1, false)[1], "FORMATTED", "save formatter result")
++equal(fake_setup, nil, "saving does not eagerly initialize completion UI")
++
++-- Blink is configured on first InsertEnter, with only owned partial options.
++vim.api.nvim_exec_autocmds("InsertEnter", { modeline = false })
++equal(type(fake_setup.enabled), "function", "dynamic completion option passed to Blink")
++equal(fake_setup.sources.min_keyword_length(), 2, "Blink receives current trigger setting")
++equal(fake_setup.sources.providers.path.enabled(), true, "Blink receives current path setting")
++
++formatting.auto_format(false)
++formatting.auto_format(true)
++formatting.auto_format(false)
++formatting.auto_format(true)
++equal(autocmd_count("BufWritePre", "AutoconfAutoFormat"), 1, "three enable-disable cycles do not duplicate")
++formatting.auto_format(false)
++editor_base.auto_save({ ["focus-lost"] = false, ["after-delay"] = { enable = false } })
++editor_lsp.auto_info(false)
++editor_lsp.auto_signature_help(false)
++equal(autocmd_count("BufWritePre", "AutoconfTestForeign"), 1, "foreign save hook survives disable")
++equal(autocmd_count("CursorHold", "AutoconfTestForeign"), 1, "foreign hover hook survives disable")
++vim.api.nvim_exec_autocmds("CursorHold", { buffer = buffer, modeline = false })
++equal(vim.g.autoconf_test_foreign_hover, 1, "foreign hover callback still runs")
++equal(autocmd_count("BufWritePre", "AutoconfAutoFormat"), 0, "format disable removes only its own hook")
++vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "should not format" })
++vim.api.nvim_buf_call(buffer, function() vim.cmd("write!") end)
++equal(format_calls, 1, "auto-format false does not invoke formatter")
++equal(vim.g.autoconf_test_foreign_save, 2, "foreign save callback still runs after auto-format false")
++
++-- The explicit false branch for soft-wrap must undo active wrapping.
++editor_ui.soft_wrap({ enable = true, ["max-wrap"] = 20, ["wrap-indicator"] = "x" })
++editor_ui.soft_wrap({ enable = false, ["max-wrap"] = 20, ["wrap-indicator"] = "x" })
++equal(vim.wo.wrap, false, "soft-wrap false applies")
++equal(vim.wo.linebreak, false, "soft-wrap false clears linebreak")
++equal(vim.wo.breakindent, false, "soft-wrap false clears breakindent")
++vim.wo.colorcolumn = "80"
++vim.bo.textwidth = 72
++editor_ui.soft_wrap({ enable = true, ["max-wrap"] = 20, ["wrap-indicator"] = false, ["wrap-at-text-width"] = true })
++equal(vim.wo.colorcolumn, "72", "wrap-at-text-width uses textwidth")
++editor_ui.soft_wrap({ enable = false, ["max-wrap"] = 20, ["wrap-indicator"] = false, ["wrap-at-text-width"] = false })
++equal(vim.wo.colorcolumn, "80", "soft-wrap disable restores prior colorcolumn")
++
++-- Disabled message/progress hooks restore their prior functions only while
++-- Autoconf still owns the installed wrapper.
++local original_message = vim.lsp.handlers["window/showMessage"]
++editor_lsp.display_messages(false)
++local owned_message = vim.lsp.handlers["window/showMessage"]
++equal(type(owned_message), "function", "message suppression wrapper installed")
++editor_lsp.display_messages(true)
++equal(vim.lsp.handlers["window/showMessage"], original_message, "owned message handler restored")
++editor_lsp.display_messages(false)
++local foreign_message = function() end
++vim.lsp.handlers["window/showMessage"] = foreign_message
++editor_lsp.display_messages(true)
++equal(vim.lsp.handlers["window/showMessage"], foreign_message, "foreign handler replacement preserved")
++vim.lsp.handlers["window/showMessage"] = original_message
++
++local original_progress = vim.lsp.handlers["$/progress"]
++editor_lsp.display_progress_messages(false)
++editor_lsp.display_progress_messages(true)
++equal(vim.lsp.handlers["$/progress"], original_progress, "progress handler restored")
++
++-- Repeated deferred initialization must not call Blink's one-shot setup again.
++defaults_lsp.setup_deferred({ autoconf_fixture = { lsp = "autoconf_owned_fixture" } })
++equal(autocmd_count("InsertEnter", "AutoconfDeferredCompletion"), 0, "completed Blink setup is not re-armed")
++
++print("autoconf repair tests passed")
+diff --git a/tests/run.sh b/tests/run.sh
+new file mode 100644
+index 0000000..a1b6836
+--- /dev/null
++++ b/tests/run.sh
+@@ -0,0 +1,27 @@
++#!/bin/sh
++set -eu
++
++SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
++PLUGIN_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
++WORKBENCH_ROOT=$(CDPATH= cd -- "$PLUGIN_ROOT/../workbench.nvim" && pwd)
++NVIM_MIN=${NVIM_MIN:-$WORKBENCH_ROOT/.test-deps/neovim-0.11.7/bin/nvim}
++NVIM_CURRENT=${NVIM_CURRENT:-$(command -v nvim)}
++TEST_XDG=$(mktemp -d "${TMPDIR:-/tmp}/autoconf-test.XXXXXX")
++trap 'rm -rf "$TEST_XDG"' EXIT HUP INT TERM
++mkdir -p "$TEST_XDG/config" "$TEST_XDG/data" "$TEST_XDG/state" "$TEST_XDG/cache"
++
++for nvim_bin in "$NVIM_MIN" "$NVIM_CURRENT"; do
++    if [ ! -x "$nvim_bin" ]; then
++        printf 'required Neovim binary not found: %s\n' "$nvim_bin" >&2
++        exit 1
++    fi
++    printf '== autoconf feature tests on %s ==\n' "$nvim_bin"
++    XDG_CONFIG_HOME="$TEST_XDG/config" XDG_DATA_HOME="$TEST_XDG/data" \
++    XDG_STATE_HOME="$TEST_XDG/state" XDG_CACHE_HOME="$TEST_XDG/cache" \
++    "$nvim_bin" --clean --headless -i NONE -n \
++        -u "$SCRIPT_DIR/minimal_init.lua" -l "$SCRIPT_DIR/run.lua"
++    XDG_CONFIG_HOME="$TEST_XDG/config" XDG_DATA_HOME="$TEST_XDG/data" \
++    XDG_STATE_HOME="$TEST_XDG/state" XDG_CACHE_HOME="$TEST_XDG/cache" \
++    "$nvim_bin" --clean --headless -i NONE -n \
++        -u "$SCRIPT_DIR/minimal_init.lua" -l "$SCRIPT_DIR/optional.lua"
++done

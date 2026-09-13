@@ -95,13 +95,18 @@ The reusable tree primitive provides expansion state, parent navigation, filteri
 
 ## Event Inventory
 
+The runtime's existing TabClosed owner also forgets Outline's data-only saved view records for the closed tab. Outline refuses to save state for an already invalid tab, preventing close-callback ordering from resurrecting it. Closed views do not retain an Outline observer merely to keep view preferences.
+
+Files follow-active-file owns `BufEnter`/`WinEnter` listeners in a child of each mounted Files view, only while enabled. Inactive-tab/view checks are O(1); only named, nonfloating real editor buffers within the retained root reach reveal. Repeated paths are deduplicated. Disable, close and disposal remove the listener and invalidate its pending reveal continuation. No root discovery or workspace switching occurs.
+
 | Event | Owner and activation | Work permitted |
 |---|---|---|
 | `ColorScheme` | Application theme adapter, one hook | Relink semantic groups; no provider refresh |
 | `VimResized` | Layout while mounted | Coalesced geometry calculation |
 | `WinClosed`, `TabClosed` | Layout/application lifecycle | Dispose matching IDs; constant-time lookup |
+| `TabClosed` | Runtime workspace owner after first explicit view open | O(1) empty path; scope-guarded post-event pass over retained tab snapshots, removing only closed-tab references and unshared roots. No discovery or provider start; removed on runtime disposal |
 | `LspAttach`, `LspDetach` | Discovery while enabled | Invalidate buffer capability snapshot |
-| `DiagnosticChanged` | Diagnostics while subscribed | Update changed buffer/namespace projection |
+| `DiagnosticChanged` | Diagnostics while at least one lease is active | Re-read the changed buffer's native diagnostics so namespace deletion preserves sibling namespace state |
 | `BufWritePost` | Buffer-scoped relevant provider lease | Mark that file or parent dirty |
 | Buffer change attachment | Visible Outline or dirty search overlay | Invalidate version; debounce work |
 | Workbench view cursor/scroll events | Buffer-local to view | Update selection/viewport only |
@@ -111,5 +116,7 @@ Follow-active-file behavior is opt-in and uses one scoped navigation observer wh
 ## Public API And Compatibility
 
 Contract version 1 is a design target. Expose `setup(config)`, `execute(action_id, args)`, `open(view_id, opts)`, `close(view_id)`, `get_status()`, and contribution registration with disposable handles. Runtime capability names and action IDs are stable once released; constructors and storage tables remain private.
+
+WB-05 implements `setup`, `execute`, `get_status`, and `register_capability`. Once the Files and Search controllers are delivered, the public facade exposes `open(view_id, opts)` and `close(view_id)`; the runtime composes the built-in `files` and `search` views through that boundary. Host integrations call the facade rather than requiring controllers or editing private state.
 
 An integration adds metadata and a handler through the public registry. It cannot require `controllers/*` or modify `_state`. New public fields require contract tests and documentation. Errors use structured codes with a short user message and optional debug details. The status API must report disabled, missing dependency, unsupported, loading, error and ready distinctly.

@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "task": "WB-23",
+  "revision": "Workbench HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the pre-existing dirty WB-01..WB-22 tree and tested WB-23 changes. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6; mini.test 0.16.0; pynvim 0.6.0; msgpack 1.1.1. Linux was unavailable locally and is recorded as unverified.",
+  "summary": "Added bounded schema-versioned JSON session persistence under stdpath('state')/workbench/sessions and explicit public list/save/restore/delete APIs. Construction, Workbench status and setup do not scan or create session state. Only an explicit API call touches it. Records whitelist root/view/query metadata; volatile handles, callbacks, jobs, result IDs and complete results are not stored. Per-process IDs isolate concurrent Neovim writers. Restore validates roots, marks result data stale, migrates the bounded schema-0 form in memory, and returns inert data without opening views or running searches/processes/operations. Corrupt and future-version data remains preserved and reportable.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; review docs/tasks.json#WB-23 and persistence module ownership/disposal",
+      "result": "Ownership validation passed for 38 Workbench Lua modules. The persistence service owns only its synchronous file operations and in-memory process/session identity; the app composition lazily constructs and disposes it, and the public API delegates explicit requests. The service has no timers, processes, subscriptions, UI or startup hooks. Changes stay within the claimed Workbench service/public API/composition, tests, Makefile and contract/evidence paths. The import boundary remains valid; no root config, plugin sibling, Nix checkout or external repository was changed for WB-23.",
+      "artifacts": [
+        "docs/tasks.json",
+        "docs/CONTRACTS.md",
+        "lua/workbench/services/persistence.lua",
+        "lua/workbench/compose.lua",
+        "lua/workbench/init.lua",
+        "tests/check_ownership.py",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim",
+      "result": "All 159 mini.test cases passed on both Neovim 0.11.7 and 0.12.4. WB-23 service/public API tests cover explicit dormant construction, schema-1 data-only normalization, corrupt JSON, future versions, invalid shape/timestamps, missing roots, schema-0 migration, stale query results, relative-path traversal rejection, per-record/count/aggregate-byte caps, injected EACCES write failure with no published partial file, session deletion, unique writer IDs and same-ID writer conflict. Public Workbench setup leaves even corrupt state untouched until list/restore is explicitly invoked.",
+      "artifacts": [
+        "tests/runtime/test_persistence_service.lua",
+        "tests/runtime/test_core_actions.lua",
+        "tests/runtime/run.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb23_persistence.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim <Neovim 0.11.7 or 0.12.4>; make test NVIM_CURRENT=nvim",
+      "result": "Two simultaneous real Neovim processes sharing one XDG state root wrote different session-specific files; neither overwrote the other's snapshot or an existing corrupt file. The second process explicitly listed/restored the first query, then showed stale/rerun-required metadata only. Both editors retained their buffer/window; no provider module or process was activated. Service disposal is idempotent and no persistent handles remain to leak.",
+      "artifacts": [
+        "tests/e2e/wb23_persistence.py",
+        "tests/runtime/test_persistence_service.lua",
+        ".test-output/e2e/wb23/20260913T061027Z-160x50-55eac7/result.json",
+        ".test-output/e2e/wb23/20260913T061027Z-120x35-407b6c/result.json",
+        ".test-output/e2e/wb23/20260913T061027Z-80x24-e55081/result.json",
+        ".test-output/e2e/wb23/20260913T061027Z-60x20-0a52be/result.json",
+        ".test-output/e2e/wb23/20260913T061030Z-160x50-f83080/result.json",
+        ".test-output/e2e/wb23/20260913T061030Z-120x35-50c32b/result.json",
+        ".test-output/e2e/wb23/20260913T061030Z-80x24-98dc9d/result.json",
+        ".test-output/e2e/wb23/20260913T061031Z-60x20-eaf457/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb23_persistence.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim <Neovim 0.11.7 or 0.12.4>",
+      "result": "UX-12 passed with a malformed saved record present before editor launch. On both Neovim versions at 160x50, 120x35, 80x24 and 60x20, the actual ext_linegrid editor reached a first frame, Workbench remained disabled, no provider loaded, and the corrupt record remained untouched. Explicit restore returned a structured corruption result; an explicit valid restore returned inert stale query metadata without changing either process's buffer/window or opening a workbench view.",
+      "artifacts": [
+        "tests/e2e/wb23_persistence.py",
+        ".test-output/e2e/wb23/20260913T061027Z-160x50-55eac7/ui-grid.json",
+        ".test-output/e2e/wb23/20260913T061027Z-120x35-407b6c/ui-grid.json",
+        ".test-output/e2e/wb23/20260913T061027Z-80x24-e55081/ui-grid.json",
+        ".test-output/e2e/wb23/20260913T061027Z-60x20-0a52be/ui-grid.json",
+        ".test-output/e2e/wb23/20260913T061030Z-160x50-f83080/ui-grid.json",
+        ".test-output/e2e/wb23/20260913T061030Z-120x35-50c32b/ui-grid.json",
+        ".test-output/e2e/wb23/20260913T061030Z-80x24-98dc9d/ui-grid.json",
+        ".test-output/e2e/wb23/20260913T061031Z-60x20-eaf457/ui-grid.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "Compare .bench-output/startup/20260913T050041Z-baseline-549e43/baseline.json with .bench-output/startup/20260913T061205Z-baseline-84e4b8/baseline.json; inspect WB-23 RPC timings",
+      "result": "Five interleaved warm host/plugin-free pairs on the same reference Mac measured host startup marker 46.333 ms p50 / 86.974 ms p95 immediately before WB-23 and 45.046 / 53.301 ms after; both p95 values are below the 150 ms target and no regression is observed. Host first-frame p50/p95 was 63.394/68.707 ms before and 58.471/68.461 ms after; first-input state was 1.951/2.094 ms before and 1.821/2.007 ms after. WB-23 modules remain unloaded until an explicit persistence API call. In eight real-grid runs, first editor frame was 17.965–36.697 ms, first save 5.902–10.469 ms, list 0.270–0.385 ms and restore 0.071–0.221 ms for one-workspace records of about 0.5 KiB. The host still does not enable Workbench by default (WB-25); the paired startup comparison verifies the unchanged host path rather than claiming startup loading of the new service.",
+      "artifacts": [
+        ".bench-output/startup/20260913T055107Z-baseline-399e18/baseline.json",
+        ".bench-output/startup/20260913T061205Z-baseline-84e4b8/baseline.json",
+        ".test-output/e2e/wb23/20260913T061027Z-160x50-55eac7/result.json",
+        ".test-output/e2e/wb23/20260913T061027Z-120x35-407b6c/result.json",
+        ".test-output/e2e/wb23/20260913T061027Z-80x24-e55081/result.json",
+        ".test-output/e2e/wb23/20260913T061027Z-60x20-0a52be/result.json",
+        ".test-output/e2e/wb23/20260913T061030Z-160x50-f83080/result.json",
+        ".test-output/e2e/wb23/20260913T061030Z-120x35-50c32b/result.json",
+        ".test-output/e2e/wb23/20260913T061030Z-80x24-98dc9d/result.json",
+        ".test-output/e2e/wb23/20260913T061031Z-60x20-eaf457/result.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; make check-ownership test-integration; python3 scripts/check_plan.py",
+      "result": "Minimum/current Neovim suites passed (159 cases each), ownership validation passed for 38 modules, all 21 Python harness/plan integration tests passed, and the plan checker accepted the task graph. Persistence uses Neovim/libuv and JSON only; no theme, optional provider, Autoconf or Nix runtime integration is required for WB-23. Validation ran on macOS; Linux remains unverified and is not claimed.",
+      "artifacts": [
+        "Makefile",
+        "tests/check_ownership.py",
+        "tests/test_plan.py",
+        "tests/test_harness_tools.py",
+        "tests/test_runner_failure.py",
+        "scripts/check_plan.py",
+        "docs/tasks.json"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1326 @@
+diff --git a/lua/workbench/core/scope.lua b/lua/workbench/core/scope.lua
+new file mode 100644
+index 0000000..6f12124
+--- /dev/null
++++ b/lua/workbench/core/scope.lua
+@@ -0,0 +1,231 @@
++local M = {}
++local Scope = {}
++Scope.__index = Scope
++
++local MAX_ERRORS = 16
++local MAX_ERROR_LENGTH = 384
++
++local function safe_message(value)
++  local message = tostring(value)
++  if #message > MAX_ERROR_LENGTH then
++    message = message:sub(1, MAX_ERROR_LENGTH - 3) .. "..."
++  end
++  return message
++end
++
++local function copy_report(report, already_disposed)
++  local result = {
++    name = report.name,
++    ok = report.ok,
++    already_disposed = already_disposed or false,
++    disposed_count = report.disposed_count,
++    error_count = report.error_count,
++    errors = {},
++  }
++  for index, error in ipairs(report.errors) do
++    result.errors[index] = { label = error.label, message = error.message }
++  end
++  return result
++end
++
++function M.new(name)
++  return setmetatable({
++    name = type(name) == "string" and name ~= "" and name or "scope",
++    alive = true,
++    generation = 1,
++    entries = {},
++    scheduled = {},
++    pending_callbacks = 0,
++    errors = {},
++    error_count = 0,
++    parent_handle = nil,
++    report = nil,
++  }, Scope)
++end
++
++function Scope:_record_error(label, message)
++  self.error_count = self.error_count + 1
++  if #self.errors < MAX_ERRORS then
++    self.errors[#self.errors + 1] = { label = safe_message(label), message = safe_message(message) }
++  end
++end
++
++function Scope:_detach(entry)
++  if not entry.active then return false end
++  entry.active = false
++  local disposer = entry.disposer
++  entry.disposer = nil
++  for index = #self.entries, 1, -1 do
++    if self.entries[index] == entry then
++      table.remove(self.entries, index)
++      break
++    end
++  end
++  return disposer
++end
++
++local function make_handle(scope, entry)
++  local handle = {}
++  function handle:dispose()
++    local disposer = scope:_detach(entry)
++    if not disposer then return false end
++    local ok, err = pcall(disposer)
++    if not ok then
++      scope:_record_error(entry.label, err)
++      return nil, safe_message(err)
++    end
++    return true
++  end
++  function handle:forget()
++    return scope:_detach(entry) ~= false
++  end
++  function handle:is_active()
++    return entry.active
++  end
++  return handle
++end
++
++function Scope:defer(disposer, label, kind)
++  if type(disposer) ~= "function" then
++    return nil, { code = "invalid_disposer", message = "scope resource disposer must be a function" }
++  end
++  label = type(label) == "string" and label ~= "" and label or "resource"
++  kind = type(kind) == "string" and kind ~= "" and kind or "resource"
++  if not self.alive then
++    local ok, err = pcall(disposer)
++    if not ok then self:_record_error(label, err) end
++    return nil, {
++      code = "scope_disposed",
++      message = ok and "scope is disposed; late resource was disposed immediately"
++        or "scope is disposed; late resource disposer failed: " .. safe_message(err),
++    }
++  end
++
++  local entry = { disposer = disposer, label = label, kind = kind, active = true }
++  self.entries[#self.entries + 1] = entry
++  return make_handle(self, entry)
++end
++
++function Scope:own(resource, disposer, label, kind)
++  if type(disposer) ~= "function" then
++    return nil, { code = "invalid_disposer", message = "owned resource requires a disposer function" }
++  end
++  local handle, err = self:defer(function() return disposer(resource) end, label, kind)
++  if not handle then return nil, err end
++  return resource, handle
++end
++
++function Scope:child(name)
++  if not self.alive then
++    return nil, { code = "scope_disposed", message = "cannot create a child under a disposed scope" }
++  end
++  local child = M.new(name or (self.name .. "/child"))
++  local handle, err = self:defer(function() child:dispose() end, "child:" .. child.name, "scope")
++  if not handle then
++    child:dispose()
++    return nil, err
++  end
++  child.parent_handle = handle
++  return child
++end
++
++function Scope:schedule(callback, scheduler)
++  if type(callback) ~= "function" then
++    return nil, { code = "invalid_callback", message = "scheduled callback must be a function" }
++  end
++  if not self.alive then
++    return nil, { code = "scope_disposed", message = "cannot schedule work in a disposed scope" }
++  end
++  scheduler = scheduler or vim.schedule
++  if type(scheduler) ~= "function" then
++    return nil, { code = "invalid_scheduler", message = "scheduler must be a function" }
++  end
++
++  local scope = self
++  local ticket = { active = true, callback = callback, generation = self.generation }
++  local function finish(run, ...)
++    if not ticket.active then return false end
++    ticket.active = false
++    scope.scheduled[ticket] = nil
++    scope.pending_callbacks = math.max(0, scope.pending_callbacks - 1)
++    local scheduled_callback = ticket.callback
++    ticket.callback = nil
++    if not run or not scope.alive or ticket.generation ~= scope.generation then return false end
++    local ok, err = pcall(scheduled_callback, ...)
++    if not ok then
++      scope:_record_error("scheduled callback", err)
++      return nil, safe_message(err)
++    end
++    return true
++  end
++  function ticket:cancel()
++    return finish(false)
++  end
++
++  self.scheduled[ticket] = true
++  self.pending_callbacks = self.pending_callbacks + 1
++  local ok, err = pcall(scheduler, function(...) return finish(true, ...) end)
++  if not ok then
++    ticket:cancel()
++    return nil, { code = "schedule_failed", message = safe_message(err) }
++  end
++  return ticket
++end
++
++function Scope:inventory()
++  local resources = {}
++  for _, entry in ipairs(self.entries) do
++    if entry.active then resources[#resources + 1] = { label = entry.label, kind = entry.kind } end
++  end
++  table.sort(resources, function(left, right)
++    if left.kind == right.kind then return left.label < right.label end
++    return left.kind < right.kind
++  end)
++  return {
++    name = self.name,
++    alive = self.alive,
++    resources = resources,
++    resource_count = #resources,
++    pending_callbacks = self.pending_callbacks,
++  }
++end
++
++function Scope:dispose()
++  if not self.alive then return copy_report(self.report, true) end
++  self.alive = false
++  self.generation = self.generation + 1
++
++  local scheduled = self.scheduled
++  self.scheduled = {}
++  for ticket in pairs(scheduled) do ticket:cancel() end
++
++  local entries = self.entries
++  self.entries = {}
++  local disposed_count = 0
++  for index = #entries, 1, -1 do
++    local entry = entries[index]
++    if entry.active then
++      local disposer = entry.disposer
++      entry.active = false
++      entry.disposer = nil
++      disposed_count = disposed_count + 1
++      local ok, err = pcall(disposer)
++      if not ok then self:_record_error(entry.label, err) end
++    end
++  end
++
++  if self.parent_handle then
++    self.parent_handle:forget()
++    self.parent_handle = nil
++  end
++  self.report = {
++    name = self.name,
++    ok = self.error_count == 0,
++    disposed_count = disposed_count,
++    error_count = self.error_count,
++    errors = self.errors,
++  }
++  return copy_report(self.report, false)
++end
++
++return M
+
+diff --git a/lua/workbench/core/actions.lua b/lua/workbench/core/actions.lua
+new file mode 100644
+index 0000000..5a99bf0
+--- /dev/null
++++ b/lua/workbench/core/actions.lua
+@@ -0,0 +1,301 @@
++local M = {}
++local Registry = {}
++Registry.__index = Registry
++
++local scopes = { global = true, workspace = true, buffer = true, view = true, item = true }
++local MAX_MESSAGE_LENGTH = 384
++
++local function message(value)
++  local result = tostring(value)
++  if #result > MAX_MESSAGE_LENGTH then result = result:sub(1, MAX_MESSAGE_LENGTH - 3) .. "..." end
++  return result
++end
++
++local function error_result(code, text)
++  return { ok = false, error = { code = code, message = text } }
++end
++
++local function is_array(value)
++  if type(value) ~= "table" then return false end
++  local count, maximum = 0, 0
++  for key in pairs(value) do
++    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then return false end
++    count = count + 1
++    maximum = math.max(maximum, key)
++  end
++  return count == maximum
++end
++
++local function valid_schema(schema, depth)
++  depth = depth or 0
++  if depth > 16 or type(schema) ~= "table" then return false, "argument schema must be a bounded table" end
++  local accepted = { object = true, array = true, string = true, boolean = true, number = true, integer = true }
++  if not accepted[schema.type] then return false, "argument schema type is unsupported" end
++  if schema.enum ~= nil and (not is_array(schema.enum) or #schema.enum == 0) then
++    return false, "argument schema enum must be a non-empty array"
++  end
++  if schema.enum then
++    for _, value in ipairs(schema.enum) do
++      if type(value) ~= "string" and type(value) ~= "number" and type(value) ~= "boolean" then
++        return false, "argument schema enum values must be scalar"
++      end
++    end
++  end
++  if schema.type == "string" then
++    for _, key in ipairs({ "min_length", "max_length" }) do
++      local value = schema[key]
++      if value ~= nil and (type(value) ~= "number" or value < 0 or value % 1 ~= 0) then
++        return false, key .. " must be a non-negative integer"
++      end
++    end
++    if schema.min_length and schema.max_length and schema.min_length > schema.max_length then
++      return false, "min_length cannot exceed max_length"
++    end
++  elseif schema.type == "number" or schema.type == "integer" then
++    for _, key in ipairs({ "minimum", "maximum" }) do
++      local value = schema[key]
++      if value ~= nil and (type(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge) then
++        return false, key .. " must be a finite number"
++      end
++    end
++    if schema.minimum and schema.maximum and schema.minimum > schema.maximum then
++      return false, "minimum cannot exceed maximum"
++    end
++  end
++  if schema.type == "object" then
++    if schema.properties ~= nil and type(schema.properties) ~= "table" then
++      return false, "object schema properties must be a table"
++    end
++    for name, child in pairs(schema.properties or {}) do
++      if type(name) ~= "string" or name == "" then return false, "object schema property names must be strings" end
++      local ok, err = valid_schema(child, depth + 1)
++      if not ok then return false, name .. ": " .. err end
++    end
++    if schema.required ~= nil and not is_array(schema.required) then
++      return false, "object schema required must be an array"
++    end
++    for _, name in ipairs(schema.required or {}) do
++      if type(name) ~= "string" or not (schema.properties or {})[name] then
++        return false, "required fields must name declared object properties"
++      end
++    end
++    if schema.additional_properties ~= nil and type(schema.additional_properties) ~= "boolean" then
++      return false, "additional_properties must be boolean"
++    end
++  elseif schema.type == "array" and schema.items ~= nil then
++    local ok, err = valid_schema(schema.items, depth + 1)
++    if not ok then return false, "array item: " .. err end
++  end
++  return true
++end
++
++local function valid_action_id(id)
++  if type(id) ~= "string" then return false end
++  local segments = 0
++  for segment in (id .. "."):gmatch("(.-)%.") do
++    if not segment:match("^[a-z][a-z0-9_-]*$") then return false end
++    segments = segments + 1
++  end
++  return segments > 1
++end
++
++local function validate_value(schema, value, path, depth)
++  depth = depth or 0
++  if depth > 16 then return "argument value is nested too deeply" end
++  local expected = schema.type
++  local actual = type(value)
++  local valid = expected == "object" and actual == "table" and (not is_array(value) or next(value) == nil)
++    or expected == "array" and is_array(value)
++    or expected == "string" and actual == "string"
++    or expected == "boolean" and actual == "boolean"
++    or expected == "number" and actual == "number"
++    or expected == "integer" and actual == "number" and value % 1 == 0
++  if not valid then return path .. " must be " .. expected end
++
++  if schema.enum then
++    local found = false
++    for _, option in ipairs(schema.enum) do
++      if value == option then found = true; break end
++    end
++    if not found then return path .. " must match one of the declared values" end
++  end
++  if expected == "string" then
++    if schema.min_length and #value < schema.min_length then return path .. " is shorter than its minimum length" end
++    if schema.max_length and #value > schema.max_length then return path .. " is longer than its maximum length" end
++  elseif expected == "number" or expected == "integer" then
++    if schema.minimum and value < schema.minimum then return path .. " is below its minimum" end
++    if schema.maximum and value > schema.maximum then return path .. " is above its maximum" end
++  elseif expected == "array" and schema.items then
++    for index, item in ipairs(value) do
++      local err = validate_value(schema.items, item, path .. "[" .. index .. "]", depth + 1)
++      if err then return err end
++    end
++  elseif expected == "object" then
++    local properties = schema.properties or {}
++    for _, name in ipairs(schema.required or {}) do
++      if value[name] == nil then return path .. "." .. name .. " is required" end
++    end
++    for name, item in pairs(value) do
++      local property = properties[name]
++      if not property then
++        if schema.additional_properties ~= true then return path .. "." .. tostring(name) .. " is not allowed" end
++      else
++        local err = validate_value(property, item, path .. "." .. name, depth + 1)
++        if err then return err end
++      end
++    end
++  end
++  return nil
++end
++
++local function validate_action(action)
++  if type(action) ~= "table" then return nil, "action must be a plain record" end
++  if not valid_action_id(action.id) then
++    return nil, "action id must be a namespaced lowercase identifier"
++  end
++  for _, field in ipairs({ "title", "category" }) do
++    if type(action[field]) ~= "string" or action[field] == "" then return nil, "action " .. field .. " is required" end
++  end
++  if not scopes[action.scope] then return nil, "action scope is unsupported" end
++  if type(action.available) ~= "function" then return nil, "action available(ctx) is required" end
++  if type(action.run) ~= "function" then return nil, "action run(ctx, args) is required" end
++  if action.checked ~= nil and type(action.checked) ~= "function" then return nil, "action checked(ctx) must be a function" end
++  if action.args_schema ~= nil then
++    local ok, err = valid_schema(action.args_schema)
++    if not ok then return nil, err end
++  end
++  return true
++end
++
++local function copy_action(action)
++  return {
++    id = action.id,
++    title = action.title,
++    category = action.category,
++    scope = action.scope,
++    available = action.available,
++    checked = action.checked,
++    run = action.run,
++    args_schema = action.args_schema and vim.deepcopy(action.args_schema) or nil,
++  }
++end
++
++local function availability(record, context)
++  local ok, state = pcall(record.action.available, context or {})
++  if not ok then return { enabled = false, code = "availability_error", reason = message(state) } end
++  if type(state) ~= "table" or type(state.enabled) ~= "boolean" then
++    return { enabled = false, code = "invalid_availability", reason = "action returned no boolean enabled state" }
++  end
++  local result = { enabled = state.enabled }
++  if state.reason ~= nil then result.reason = message(state.reason) end
++  if state.code ~= nil then result.code = message(state.code) end
++  return result
++end
++
++function M.new()
++  return setmetatable({ registrations = {} }, Registry)
++end
++
++function Registry:register(action, opts)
++  opts = opts or {}
++  local valid, validation_error = validate_action(action)
++  if not valid then return nil, { code = "invalid_action", message = validation_error } end
++  local previous = self.registrations[action.id]
++  if previous and opts.replace ~= true then
++    return nil, { code = "duplicate_action", message = "action is already registered: " .. action.id }
++  end
++  if opts.scope ~= nil and (type(opts.scope) ~= "table" or type(opts.scope.defer) ~= "function") then
++    return nil, { code = "invalid_scope", message = "action owner must be a disposable scope" }
++  end
++
++  local id = action.id
++  local record = { id = id, action = copy_action(action), previous = previous, active = true }
++  self.registrations[id] = record
++  local registry = self
++  local handle = {}
++  function handle:dispose()
++    if not record.active then return false end
++    record.active = false
++    if registry.registrations[id] == record then
++      local fallback = record.previous
++      while fallback and not fallback.active do fallback = fallback.previous end
++      registry.registrations[id] = fallback
++    end
++    return true
++  end
++  function handle:is_active()
++    return record.active
++  end
++
++  if opts.scope then
++    local owner, owner_error = opts.scope:defer(function() handle:dispose() end, "action:" .. id, "action")
++    if not owner then
++      handle:dispose()
++      return nil, owner_error or { code = "scope_disposed", message = "action owner scope is disposed" }
++    end
++  end
++  return handle
++end
++
++function Registry:execute(id, context, args)
++  local record = self.registrations[id]
++  if not record or not record.active then return error_result("unknown_action", "action is not registered: " .. tostring(id)) end
++  local available = availability(record, context)
++  if not available.enabled then
++    return error_result(available.code or "unavailable", available.reason or "action is unavailable")
++  end
++
++  if args == nil then args = {} end
++  if record.action.args_schema then
++    local argument_error = validate_value(record.action.args_schema, args, "args")
++    if argument_error then return error_result("invalid_arguments", argument_error) end
++  elseif type(args) ~= "table" then
++    return error_result("invalid_arguments", "args must be a table")
++  end
++
++  local ok, result = pcall(record.action.run, context or {}, vim.deepcopy(args))
++  if not ok then return error_result("action_error", message(result)) end
++  return { ok = true, value = result }
++end
++
++function Registry:list(context)
++  local ids = {}
++  for id, record in pairs(self.registrations) do
++    if record.active then ids[#ids + 1] = id end
++  end
++  table.sort(ids)
++
++  local result = {}
++  for _, id in ipairs(ids) do
++    local action = self.registrations[id].action
++    local projection = {
++      id = action.id,
++      title = action.title,
++      category = action.category,
++      scope = action.scope,
++      available = availability(self.registrations[id], context),
++      args_schema = action.args_schema and vim.deepcopy(action.args_schema) or nil,
++    }
++    if action.checked then
++      local ok, checked = pcall(action.checked, context or {})
++      if ok and type(checked) == "boolean" then
++        projection.checked = checked
++      else
++        projection.checked_error = ok and "checked(ctx) must return a boolean" or message(checked)
++      end
++    end
++    result[#result + 1] = projection
++  end
++  return result
++end
++
++function Registry:inventory()
++  local result = {}
++  for id, record in pairs(self.registrations) do
++    if record.active then result[#result + 1] = id end
++  end
++  table.sort(result)
++  return result
++end
++
++return M
+
+diff --git a/lua/workbench/compose.lua b/lua/workbench/compose.lua
+new file mode 100644
+index 0000000..8b6847a
+--- /dev/null
++++ b/lua/workbench/compose.lua
+@@ -0,0 +1,130 @@
++local Scope = require("workbench.core.scope")
++local ActionRegistry = require("workbench.core.actions")
++
++local M = {}
++local App = {}
++App.__index = App
++
++local function error_value(code, text)
++  return { code = code, message = text }
++end
++
++local function dispose_installed(scope, id, message)
++  local report = scope:dispose()
++  local details = message
++  if report.error_count > 0 then details = details .. "; cleanup reported " .. report.error_count .. " error(s)" end
++  return nil, error_value("capability_install_failed", details)
++end
++
++function M.new()
++  return setmetatable({
++    scope = Scope.new("workbench"),
++    actions = ActionRegistry.new(),
++    capabilities = {},
++    state = "disabled",
++    disposed = false,
++  }, App)
++end
++
++function App:set_enabled(enabled)
++  if self.disposed then return nil, error_value("app_disposed", "workbench application has been disposed") end
++  if type(enabled) ~= "boolean" then return nil, error_value("invalid_config", "enabled must be boolean") end
++  self.state = enabled and "enabled" or "disabled"
++  return true
++end
++
++function App:register_capability(id, installer)
++  if self.disposed or not self.scope.alive then
++    return nil, error_value("app_disposed", "workbench application has been disposed")
++  end
++  if type(id) ~= "string" or not id:match("^[a-z][a-z0-9_-]*$") then
++    return nil, error_value("invalid_capability", "capability id must be a lowercase identifier")
++  end
++  if type(installer) ~= "function" then
++    return nil, error_value("invalid_capability", "capability installer must be a function")
++  end
++  if self.capabilities[id] then
++    return nil, error_value("duplicate_capability", "capability is already registered: " .. id)
++  end
++
++  local scope, scope_error = self.scope:child("capability:" .. id)
++  if not scope then return nil, scope_error end
++  local context = { id = id, scope = scope, actions = self.actions }
++  local ok, cleanup, install_error = pcall(installer, context)
++  if not ok then return dispose_installed(scope, id, tostring(cleanup)) end
++  if cleanup == false or (cleanup == nil and install_error ~= nil) then
++    return dispose_installed(scope, id, tostring(install_error or "capability installer declined registration"))
++  end
++  if cleanup ~= nil and cleanup ~= true and type(cleanup) ~= "function"
++    and not (type(cleanup) == "table" and type(cleanup.dispose) == "function") then
++    return dispose_installed(scope, id, "installer must return a disposer, disposable handle, or nil")
++  end
++  if not scope.alive then return nil, error_value("capability_install_failed", "installer disposed its capability scope") end
++  if type(cleanup) == "function" then
++    local _, err = scope:defer(cleanup, "capability-disposer:" .. id, "capability")
++    if err then return dispose_installed(scope, id, err.message) end
++  elseif type(cleanup) == "table" then
++    local _, err = scope:defer(function() cleanup:dispose() end, "capability-disposer:" .. id, "capability")
++    if err then return dispose_installed(scope, id, err.message) end
++  end
++
++  local entry = { id = id, scope = scope, active = true }
++  local app = self
++  local registration_cleanup, registration_error = scope:defer(function()
++    entry.active = false
++    if app.capabilities[id] == entry then app.capabilities[id] = nil end
++  end, "capability-registration:" .. id, "registration")
++  if not registration_cleanup then
++    return dispose_installed(scope, id, registration_error and registration_error.message or "could not own capability registration")
++  end
++  self.capabilities[id] = entry
++
++  local handle = {}
++  function handle:dispose()
++    if not entry.active then return false end
++    return scope:dispose()
++  end
++  function handle:is_active()
++    return entry.active
++  end
++  return handle
++end
++
++function App:execute(action_id, context, args)
++  if self.disposed then return { ok = false, error = error_value("app_disposed", "workbench application has been disposed") } end
++  if self.state ~= "enabled" then
++    return { ok = false, error = error_value("disabled", "workbench is disabled; setup must explicitly enable it") }
++  end
++  return self.actions:execute(action_id, context, args)
++end
++
++function App:get_status(context)
++  local capabilities = {}
++  for id, entry in pairs(self.capabilities) do
++    if entry.active then
++      capabilities[#capabilities + 1] = {
++        id = id,
++        state = "registered",
++        resources = entry.scope:inventory(),
++      }
++    end
++  end
++  table.sort(capabilities, function(left, right) return left.id < right.id end)
++  return {
++    state = self.disposed and "disabled" or self.state,
++    reason = self.disposed and "disposed" or (self.state == "disabled" and "not_enabled" or nil),
++    capabilities = capabilities,
++    actions = self.actions:list(context),
++    resources = self.scope:inventory(),
++  }
++end
++
++function App:dispose()
++  if self.disposed then return self.disposal_report end
++  self.disposed = true
++  self.state = "disabled"
++  self.disposal_report = self.scope:dispose()
++  return self.disposal_report
++end
++
++return M
+
+diff --git a/lua/workbench/init.lua b/lua/workbench/init.lua
+new file mode 100644
+index 0000000..3cd67c4
+--- /dev/null
++++ b/lua/workbench/init.lua
+@@ -0,0 +1,75 @@
++local M = {}
++local app
++
++local function normalize_config(config)
++  if config == nil then config = {} end
++  if type(config) ~= "table" then
++    return nil, { code = "invalid_config", message = "setup config must be a table" }
++  end
++  for key in pairs(config) do
++    if key ~= "enabled" then
++      return nil, { code = "unknown_config", message = "unknown setup option: " .. tostring(key) }
++    end
++  end
++  if config.enabled ~= nil and type(config.enabled) ~= "boolean" then
++    return nil, { code = "invalid_config", message = "enabled must be boolean" }
++  end
++  return { enabled = config.enabled }
++end
++
++function M.setup(config)
++  local normalized, validation_error = normalize_config(config)
++  if not normalized then return nil, validation_error end
++  if not app then
++    local ok, compose = pcall(require, "workbench.compose")
++    if not ok then return nil, { code = "composition_error", message = tostring(compose) } end
++    app = compose.new()
++  end
++  if normalized.enabled ~= nil then
++    local ok, err = app:set_enabled(normalized.enabled)
++    if not ok then return nil, err end
++  end
++  return M.get_status()
++end
++
++function M.execute(action_id, args, context)
++  if not app then
++    return { ok = false, error = { code = "disabled", message = "workbench is not set up" } }
++  end
++  return app:execute(action_id, context, args)
++end
++
++function M.register_capability(id, installer)
++  if not app then
++    return nil, { code = "not_setup", message = "call setup() before registering capabilities" }
++  end
++  return app:register_capability(id, installer)
++end
++
++function M.get_status(context)
++  if not app then
++    return {
++      state = "disabled",
++      reason = "not_setup",
++      capabilities = {},
++      actions = {},
++      resources = { name = "workbench", alive = false, resources = {}, resource_count = 0, pending_callbacks = 0 },
++    }
++  end
++  return app:get_status(context)
++end
++
++function M.command(arguments)
++  local command = type(arguments) == "string" and vim.trim(arguments) or ""
++  if command ~= "" and command ~= "status" then
++    vim.notify("Usage: :Workbench [status]", vim.log.levels.ERROR)
++    return nil
++  end
++  local status = M.get_status()
++  local text = "Workbench: " .. status.state
++  if status.reason then text = text .. " (" .. status.reason .. ")" end
++  vim.notify(text, vim.log.levels.INFO)
++  return status
++end
++
++return M
+
+diff --git a/plugin/workbench.lua b/plugin/workbench.lua
+new file mode 100644
+index 0000000..4de24ae
+--- /dev/null
++++ b/plugin/workbench.lua
+@@ -0,0 +1,6 @@
++pcall(vim.api.nvim_create_user_command, "Workbench", function(command)
++  require("workbench").command(command.args)
++end, {
++  nargs = "?",
++  desc = "Show the explicit workbench status",
++})
+
+diff --git a/tests/runtime/test_core_actions.lua b/tests/runtime/test_core_actions.lua
+new file mode 100644
+index 0000000..be8cd53
+--- /dev/null
++++ b/tests/runtime/test_core_actions.lua
+@@ -0,0 +1,461 @@
++local MiniTest = require("mini.test")
++local expect = MiniTest.expect
++local child
++local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h:h")
++
++local function evaluate(source, ...)
++  return child.lua(source, { ... })
++end
++
++return MiniTest.new_set({
++  hooks = {
++    pre_case = function()
++      child = MiniTest.new_child_neovim()
++      child.start({}, { nvim_executable = assert(vim.env.NVIM_TEST_BINARY) })
++      child.lua([[local repo_root, test_root = ...; vim.opt.runtimepath:prepend(repo_root); vim.opt.runtimepath:append(test_root)]], {
++        root,
++        root .. "/tests",
++      })
++    end,
++    post_case = function()
++      if child then
++        pcall(child.stop)
++        child = nil
++      end
++    end,
++  },
++}, {
++  ["scope disposes in reverse order, continues after failures and handles late resources"] = function()
++    local result = evaluate([[
++      local Scope = require('workbench.core.scope')
++      local events = {}
++      local scope = Scope.new('test-root')
++      scope:defer(function() events[#events + 1] = 'first' end, 'first')
++      scope:defer(function() events[#events + 1] = 'throws'; error('cleanup failed') end, 'throws')
++      scope:defer(function() events[#events + 1] = 'last' end, 'last')
++      local report = scope:dispose()
++      local second = scope:dispose()
++      local late_count = 0
++      local late, late_error = scope:defer(function() late_count = late_count + 1 end, 'late')
++      return {
++        events = table.concat(events, ','),
++        report = report,
++        second = second,
++        late = late,
++        late_error = late_error,
++        late_count = late_count,
++        inventory = scope:inventory(),
++      }
++    ]])
++    expect.equality(result.events, "last,throws,first")
++    expect.equality(result.report.ok, false)
++    expect.equality(result.report.error_count, 1)
++    expect.equality(result.report.errors[1].label, "throws")
++    expect.equality(result.report.disposed_count, 3)
++    expect.equality(result.second.already_disposed, true)
++    expect.equality(result.second.disposed_count, 3)
++    expect.equality(result.late, nil)
++    expect.equality(result.late_error.code, "scope_disposed")
++    expect.equality(result.late_count, 1)
++    expect.equality(result.inventory.resource_count, 0)
++  end,
++
++  ["child scopes release parent ownership and inventories show live resources"] = function()
++    local result = evaluate([[
++      local Scope = require('workbench.core.scope')
++      local parent = Scope.new('parent')
++      local child = assert(parent:child('view:files'))
++      local resource = { id = 'timer-1' }
++      local owned = assert(child:own(resource, function(value) value.disposed = true end, 'refresh-timer', 'timer'))
++      local before = parent:inventory()
++      local child_before = child:inventory()
++      local child_report = child:dispose()
++      local after = parent:inventory()
++      local parent_report = parent:dispose()
++      return {
++        same_resource = owned.id == resource.id,
++        disposed = resource.disposed,
++        before = before,
++        child_before = child_before,
++        after = after,
++        child_report = child_report,
++        parent_report = parent_report,
++      }
++    ]])
++    expect.equality(result.same_resource, true)
++    expect.equality(result.disposed, true)
++    expect.equality(result.before.resource_count, 1)
++    expect.equality(result.before.resources[1].kind, "scope")
++    expect.equality(result.child_before.resource_count, 1)
++    expect.equality(result.child_before.resources[1].label, "refresh-timer")
++    expect.equality(result.child_report.disposed_count, 1)
++    expect.equality(result.after.resource_count, 0)
++    expect.equality(result.parent_report.disposed_count, 0)
++  end,
++
++  ["scheduled callbacks are invalidated on cancellation and scope disposal"] = function()
++    local result = evaluate([[
++      local Scope = require('workbench.core.scope')
++      local scope = Scope.new('scheduled')
++      local queue, calls = {}, 0
++      local function enqueue(callback) queue[#queue + 1] = callback end
++      local cancelled = assert(scope:schedule(function() calls = calls + 10 end, enqueue))
++      local first_pending = scope:inventory().pending_callbacks
++      cancelled:cancel()
++      local after_cancel = scope:inventory().pending_callbacks
++      local delayed = assert(scope:schedule(function() calls = calls + 1 end, enqueue))
++      local report = scope:dispose()
++      local pending_after_dispose = scope:inventory().pending_callbacks
++      queue[1]()
++      queue[2]()
++      return {
++        calls = calls,
++        first_pending = first_pending,
++        after_cancel = after_cancel,
++        pending_after_dispose = pending_after_dispose,
++        delayed_active = delayed.active,
++        queue_count = #queue,
++        report = report,
++        late_ticket = scope:schedule(function() calls = calls + 100 end, enqueue),
++      }
++    ]])
++    expect.equality(result.first_pending, 1)
++    expect.equality(result.after_cancel, 0)
++    expect.equality(result.pending_after_dispose, 0)
++    expect.equality(result.delayed_active, false)
++    expect.equality(result.queue_count, 2)
++    expect.equality(result.calls, 0)
++    expect.equality(result.report.ok, true)
++    expect.equality(result.late_ticket, nil)
++  end,
++
++  ["action metadata, schema validation and unavailable reasons stay typed"] = function()
++    local result = evaluate([[
++      local Actions = require('workbench.core.actions')
++      local registry = Actions.new()
++      local available_calls, runs = 0, 0
++      local handle = assert(registry:register({
++        id = 'search.query',
++        title = 'Search workspace',
++        category = 'Search',
++        scope = 'workspace',
++        available = function()
++          available_calls = available_calls + 1
++          return { enabled = false, code = 'missing_dependency', reason = 'ripgrep is not installed' }
++        end,
++        checked = function() return false end,
++        args_schema = {
++          type = 'object',
++          properties = { query = { type = 'string', min_length = 1 }, case_sensitive = { type = 'boolean' } },
++          required = { 'query' },
++        },
++        run = function() runs = runs + 1 end,
++      }))
++      local inventory = registry:inventory()
++      local calls_after_inventory = available_calls
++      local projection = registry:list({})
++      local unavailable = registry:execute('search.query', {}, { query = 'needle' })
++      local unknown = registry:execute('search.missing', {}, {})
++      return {
++        handle_active = handle:is_active(),
++        inventory = inventory,
++        calls_after_inventory = calls_after_inventory,
++        projection = projection[1],
++        unavailable = unavailable,
++        unknown = unknown,
++        runs = runs,
++        available_calls = available_calls,
++      }
++    ]])
++    expect.equality(result.handle_active, true)
++    expect.equality(result.inventory[1], "search.query")
++    expect.equality(result.calls_after_inventory, 0)
++    expect.equality(result.projection.available.enabled, false)
++    expect.equality(result.projection.available.code, "missing_dependency")
++    expect.equality(result.projection.available.reason, "ripgrep is not installed")
++    expect.equality(result.projection.checked, false)
++    expect.equality(result.projection.args_schema.type, "object")
++    expect.equality(result.unavailable.ok, false)
++    expect.equality(result.unavailable.error.code, "missing_dependency")
++    expect.equality(result.unknown.error.code, "unknown_action")
++    expect.equality(result.runs, 0)
++    expect.equality(result.available_calls, 2)
++  end,
++
++  ["action execution validates arguments and catches availability and handler errors"] = function()
++    local result = evaluate([[
++      local registry = require('workbench.core.actions').new()
++      local contexts, values = 0, {}
++      assert(registry:register({
++        id = 'files.open',
++        title = 'Open file',
++        category = 'Files',
++        scope = 'item',
++        available = function(context) contexts = contexts + 1; return { enabled = context.allowed == true } end,
++        args_schema = {
++          type = 'object',
++          properties = { path = { type = 'string', min_length = 1 }, line = { type = 'integer', minimum = 1 } },
++          required = { 'path' },
++        },
++        run = function(_, args) values[#values + 1] = args.path; return args.line or 1 end,
++      }))
++      assert(registry:register({
++        id = 'test.faulty_availability',
++        title = 'Faulty availability',
++        category = 'Test',
++        scope = 'global',
++        available = function() error('availability exploded') end,
++        run = function() error('must not execute') end,
++      }))
++      assert(registry:register({
++        id = 'test.faulty_handler',
++        title = 'Faulty handler',
++        category = 'Test',
++        scope = 'global',
++        available = function() return { enabled = true } end,
++        run = function() error('handler exploded') end,
++      }))
++      local disabled = registry:execute('files.open', { allowed = false }, { path = '/tmp/a' })
++      local missing = registry:execute('files.open', { allowed = true }, {})
++      local unexpected = registry:execute('files.open', { allowed = true }, { path = '/tmp/a', extra = true })
++      local success = registry:execute('files.open', { allowed = true }, { path = '/tmp/a', line = 4 })
++      local availability_error = registry:execute('test.faulty_availability', {}, {})
++      local handler_error = registry:execute('test.faulty_handler', {}, {})
++      return {
++        disabled = disabled,
++        missing = missing,
++        unexpected = unexpected,
++        success = success,
++        values = values,
++        contexts = contexts,
++        availability_error = availability_error,
++        handler_error = handler_error,
++      }
++    ]])
++    expect.equality(result.disabled.error.code, "unavailable")
++    expect.equality(result.missing.error.code, "invalid_arguments")
++    expect.equality(result.unexpected.error.code, "invalid_arguments")
++    expect.equality(result.success.ok, true)
++    expect.equality(result.success.value, 4)
++    expect.equality(result.values[1], "/tmp/a")
++    expect.equality(result.contexts, 4)
++    expect.equality(result.availability_error.error.code, "availability_error")
++    expect.equality(result.handler_error.error.code, "action_error")
++  end,
++
++  ["replacements restore only live owners and leave sibling actions intact"] = function()
++    local result = evaluate([[
++      local registry = require('workbench.core.actions').new()
++      local function action(id, title, value)
++        return {
++          id = id, title = title, category = 'Test', scope = 'global',
++          available = function() return { enabled = true } end,
++          run = function() return value end,
++        }
++      end
++      local original = assert(registry:register(action('test.shared', 'Original', 'original')))
++      local sibling = assert(registry:register(action('test.sibling', 'Sibling', 'sibling')))
++      local duplicate, duplicate_error = registry:register(action('test.shared', 'Duplicate', 'bad'))
++      local replacement = assert(registry:register(action('test.shared', 'Replacement', 'replacement'), { replace = true }))
++      local top_value = registry:execute('test.shared', {}, {}).value
++      original:dispose()
++      replacement:dispose()
++      local after_old_owner_disposed = registry:execute('test.shared', {}, {})
++      local sibling_value = registry:execute('test.sibling', {}, {}).value
++      local again = registry:register(action('test.shared', 'A', 'a'))
++      local newer = assert(registry:register(action('test.shared', 'B', 'b'), { replace = true }))
++      again:dispose()
++      newer:dispose()
++      return {
++        duplicate = duplicate,
++        duplicate_error = duplicate_error,
++        top_value = top_value,
++        after_old_owner_disposed = after_old_owner_disposed,
++        sibling_value = sibling_value,
++        sibling_active = sibling:is_active(),
++        current_ids = registry:inventory(),
++      }
++    ]])
++    expect.equality(result.duplicate, nil)
++    expect.equality(result.duplicate_error.code, "duplicate_action")
++    expect.equality(result.top_value, "replacement")
++    expect.equality(result.after_old_owner_disposed.error.code, "unknown_action")
++    expect.equality(result.sibling_value, "sibling")
++    expect.equality(result.sibling_active, true)
++    expect.equality(#result.current_ids, 1)
++    expect.equality(result.current_ids[1], "test.sibling")
++  end,
++
++  ["synthetic capabilities own their actions and disposal never alters a sibling"] = function()
++    local result = evaluate([[
++      local App = require('workbench.compose').new()
++      local cleanups = { a = 0, b = 0 }
++      local function installer(id)
++        return function(context)
++          local handle, err = context.actions:register({
++            id = 'synthetic.' .. id,
++            title = 'Synthetic ' .. id,
++            category = 'Test',
++            scope = 'global',
++            available = function() return { enabled = true } end,
++            run = function() return id end,
++          }, { scope = context.scope })
++          assert(handle, err and err.message)
++          return function() cleanups[id] = cleanups[id] + 1 end
++        end
++      end
++      App:set_enabled(true)
++      local a = assert(App:register_capability('cap_a', installer('a')))
++      local b = assert(App:register_capability('cap_b', installer('b')))
++      local duplicate, duplicate_error = App:register_capability('cap_a', installer('a'))
++      local before = App:get_status()
++      local result_a = App:execute('synthetic.a', {}, {}).value
++      a:dispose()
++      local after_a = App:get_status()
++      local missing_a = App:execute('synthetic.a', {}, {})
++      local result_b = App:execute('synthetic.b', {}, {}).value
++      local failed, failed_error = App:register_capability('cap_fail', function(context)
++        assert(context.actions:register({
++          id = 'synthetic.failed', title = 'Failed', category = 'Test', scope = 'global',
++          available = function() return { enabled = true } end,
++          run = function() return true end,
++        }, { scope = context.scope }))
++        error('installation failed')
++      end)
++      local after_failure = App:get_status()
++      b:dispose()
++      local final = App:get_status()
++      return {
++        duplicate = duplicate,
++        duplicate_error = duplicate_error,
++        before = before,
++        result_a = result_a,
++        result_b = result_b,
++        after_a = after_a,
++        missing_a = missing_a,
++        failed = failed,
++        failed_error = failed_error,
++        after_failure = after_failure,
++        final = final,
++        cleanups = cleanups,
++        b_active = b:is_active(),
++      }
++    ]])
++    expect.equality(result.duplicate, nil)
++    expect.equality(result.duplicate_error.code, "duplicate_capability")
++    expect.equality(result.before.state, "enabled")
++    expect.equality(#result.before.capabilities, 2)
++    expect.equality(result.before.resources.resource_count, 2)
++    expect.equality(result.result_a, "a")
++    expect.equality(result.result_b, "b")
++    expect.equality(#result.after_a.capabilities, 1)
++    expect.equality(result.after_a.capabilities[1].id, "cap_b")
++    expect.equality(result.missing_a.error.code, "unknown_action")
++    expect.equality(result.failed, nil)
++    expect.equality(result.failed_error.code, "capability_install_failed")
++    expect.equality(#result.after_failure.capabilities, 1)
++    expect.equality(result.after_failure.actions[1].id, "synthetic.b")
++    expect.equality(result.final.resources.resource_count, 0)
++    expect.equality(#result.final.actions, 0)
++    expect.equality(result.cleanups.a, 1)
++    expect.equality(result.cleanups.b, 1)
++    expect.equality(result.b_active, false)
++  end,
++
++  ["public command stays dormant and setup false is distinct from absent"] = function()
++    local result = evaluate([[
++      local api = require('workbench')
++      local before = api.get_status()
++      local unloaded_before_setup = package.loaded['workbench.compose'] == nil
++        and package.loaded['workbench.core.scope'] == nil
++        and package.loaded['workbench.core.actions'] == nil
++      vim.cmd('runtime plugin/workbench.lua')
++      local has_command = vim.fn.exists(':Workbench') == 2
++      vim.cmd('Workbench status')
++      local after_command = api.get_status()
++      local still_lazy = package.loaded['workbench.compose'] == nil
++      local invalid, invalid_error = api.setup({ unknown_option = true })
++      local after_invalid = api.get_status()
++      local configured = assert(api.setup({ enabled = false }))
++      local capability = assert(api.register_capability('public_test', function(context)
++        assert(context.actions:register({
++          id = 'public.ping', title = 'Ping', category = 'Test', scope = 'global',
++          available = function() return { enabled = true } end,
++          run = function(_, args) return args.value end,
++        }, { scope = context.scope }))
++      end))
++      local disabled = api.execute('public.ping', { value = 'pong' })
++      local enabled = assert(api.setup({ enabled = true }))
++      local execution = api.execute('public.ping', { value = 'pong' })
++      local absent_preserves = assert(api.setup({}))
++      local disabled_again = assert(api.setup({ enabled = false }))
++      local no_provider_loaded = package.loaded['workbench.providers.rg'] == nil
++      capability:dispose()
++      return {
++        before = before,
++        unloaded_before_setup = unloaded_before_setup,
++        has_command = has_command,
++        after_command = after_command,
++        still_lazy = still_lazy,
++        invalid = invalid,
++        invalid_error = invalid_error,
++        after_invalid = after_invalid,
++        configured = configured,
++        disabled = disabled,
++        enabled = enabled,
++        execution = execution,
++        absent_preserves = absent_preserves,
++        disabled_again = disabled_again,
++        no_provider_loaded = no_provider_loaded,
++      }
++    ]])
++    expect.equality(result.before.state, "disabled")
++    expect.equality(result.before.reason, "not_setup")
++    expect.equality(result.unloaded_before_setup, true)
++    expect.equality(result.has_command, true)
++    expect.equality(result.after_command.state, "disabled")
++    expect.equality(result.still_lazy, true)
++    expect.equality(result.invalid, nil)
++    expect.equality(result.invalid_error.code, "unknown_config")
++    expect.equality(result.after_invalid.state, "disabled")
++    expect.equality(result.configured.state, "disabled")
++    expect.equality(result.disabled.error.code, "disabled")
++    expect.equality(result.enabled.state, "enabled")
++    expect.equality(result.execution.ok, true)
++    expect.equality(result.execution.value, "pong")
++    expect.equality(result.absent_preserves.state, "enabled")
++    expect.equality(result.disabled_again.state, "disabled")
++    expect.equality(result.no_provider_loaded, true)
++  end,
++
++  ["one hundred scope and capability cycles return resource inventory to zero"] = function()
++    local result = evaluate([[
++      local App = require('workbench.compose').new()
++      local failures = 0
++      for index = 1, 100 do
++        local id = 'cycle_' .. index
++        local handle, err = App:register_capability(id, function(context)
++          local action, action_error = context.actions:register({
++            id = 'cycle.' .. id, title = id, category = 'Test', scope = 'global',
++            available = function() return { enabled = true } end,
++            run = function() return true end,
++          }, { scope = context.scope })
++          assert(action, action_error and action_error.message)
++        end)
++        assert(handle, err and err.message)
++        handle:dispose()
++      end
++      return {
++        scope = App.scope:inventory(),
++        capabilities = #App:get_status().capabilities,
++        actions = App.actions:inventory(),
++        failures = failures,
++      }
++    ]])
++    expect.equality(result.scope.resource_count, 0)
++    expect.equality(result.scope.pending_callbacks, 0)
++    expect.equality(result.capabilities, 0)
++    expect.equality(#result.actions, 0)
++    expect.equality(result.failures, 0)
++  end,
++})
+
+diff --git a/tests/bench_core_actions.lua b/tests/bench_core_actions.lua
+new file mode 100644
+index 0000000..c57770d
+--- /dev/null
++++ b/tests/bench_core_actions.lua
+@@ -0,0 +1,72 @@
++local source = debug.getinfo(1, "S").source:sub(2)
++local root = vim.fn.fnamemodify(source, ":p:h:h")
++vim.opt.runtimepath:prepend(root)
++
++local Scope = require("workbench.core.scope")
++local Actions = require("workbench.core.actions")
++local Compose = require("workbench.compose")
++
++local sample_count = 25
++local iterations = 500
++local registry = Actions.new()
++local app = Compose.new()
++local args = { query = "needle", include_hidden = false }
++for index = 1, 50 do
++  local action = {
++    id = "bench.action_" .. index,
++    title = "Benchmark action " .. index,
++    category = "Benchmark",
++    scope = "workspace",
++    available = function() return { enabled = true } end,
++    args_schema = {
++      type = "object",
++      properties = { query = { type = "string", min_length = 1 }, include_hidden = { type = "boolean" } },
++      required = { "query" },
++    },
++    run = function(_, value) return value.query end,
++  }
++  assert(registry:register(action))
++  assert(app.actions:register(action))
++end
++
++local function percentile(values, fraction)
++  table.sort(values)
++  return values[math.max(1, math.ceil(#values * fraction))]
++end
++
++local function measure(callback)
++  local values = {}
++  for sample = 1, sample_count do
++    collectgarbage("collect")
++    local started = vim.uv.hrtime()
++    for _ = 1, iterations do callback() end
++    values[sample] = (vim.uv.hrtime() - started) / iterations / 1000
++  end
++  local median = percentile(vim.deepcopy(values), 0.5)
++  local p95 = percentile(values, 0.95)
++  return { p50_us_per_operation = median, p95_us_per_operation = p95 }
++end
++
++local function scope_cycle()
++  local scope = Scope.new("benchmark")
++  for index = 1, 8 do scope:defer(function() return index end, "resource:" .. index) end
++  assert(scope:dispose().ok)
++end
++
++local report = {
++  nvim = vim.version().major .. "." .. vim.version().minor .. "." .. vim.version().patch,
++  actions = #registry:inventory(),
++  samples = sample_count,
++  iterations_per_sample = iterations,
++  cache = "warm Lua/module state; each sample forces Lua GC before timing",
++  metrics = {
++    action_execute = measure(function() assert(registry:execute("bench.action_1", {}, args).ok) end),
++    list_50_actions = measure(function() assert(#registry:list({}) == 50) end),
++    application_status_50_actions = measure(function() assert(#app:get_status().actions == 50) end),
++    scope_create_dispose_8_resources = measure(scope_cycle),
++  },
++  action_count_after_runs = #registry:inventory(),
++  application_resources = app.scope:inventory().resource_count,
++}
++
++print(vim.json.encode(report))
+
+

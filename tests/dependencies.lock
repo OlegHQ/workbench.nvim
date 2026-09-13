@@ -1,0 +1,14 @@
+# Development-only dependencies. Nothing in this file is a runtime dependency.
+# Neovim checksums are published in the upstream tagged-release API.
+# https://api.github.com/repos/neovim/neovim/releases/tags/v0.11.7
+mini.test=https://github.com/nvim-mini/mini.test.git
+mini.test.tag=v0.16.0
+mini.test.commit=4c70379d07ea44f697d96c7a6f04c79f17b34bb3
+pynvim=0.6.0
+msgpack=1.1.1
+greenlet=3.5.5
+minimum_neovim=0.11.7
+minimum_neovim_macos_arm64.sha256=9c84686ce84bbab725ff3d88ca3ac1d6da5a72128b68d9dd8094e34d4049a126
+minimum_neovim_macos_x86_64.sha256=014649c0c75e188fd70d40f787ee7cb83e7c2926264cd4e72c300d0198922371
+minimum_neovim_linux_arm64.sha256=99bb3c53604e83ce18fc0b459e34cf1a5e212f4e5fbe2eb136b3c18092ae9905
+minimum_neovim_linux_x86_64.sha256=38a7c6317f94503841096c00e8fde05ef04b9472fc9d7d62b6e033cecd6f7991

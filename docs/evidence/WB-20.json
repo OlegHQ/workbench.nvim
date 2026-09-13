@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "task": "WB-20",
+  "revision": "Workbench HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the existing dirty WB-01..WB-19 tree and the tested WB-20 changes; no commit or push was made. WB-20 code, tests, UI-grid output and performance artifacts are identified below.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Git 2.54.0; Python 3.14.6; mini.test 0.16.0; pynvim 0.6.0; msgpack 1.1.1. Linux was unavailable locally.",
+  "summary": "Added a bounded asynchronous read-only Git provider that parses porcelain-v2 NUL records structurally, retains rename source paths, coalesces refreshes, caches repository snapshots, aggregates status, identifies linked worktrees/submodules, and limits selected-file diff previews. Added a Git status controller/action with explicit diff and refresh keys; cursor movement performs no Git work. Git-missing and non-Git states are visible. Cancellation, delayed exits and disposal release owned processes, views and callbacks. A shared list-view viewport calculation was corrected after the RPC grid exposed a selection/scroll defect that otherwise made diff lines unreachable. No staging, discard, commit or conflict-resolution operation is exposed.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; inspect docs/tasks.json#WB-20 ownership and the final diff for allowed-path/dependency review",
+      "result": "Ownership checks passed for 35 Workbench Lua modules. WB-20 changes stay within its claimed provider, controller, shared view, tests, Makefile and evidence paths. The provider owns process/cache lifetimes and has no UI dependency; the controller owns per-tab views/actions and delegates status/diff work; the shared view owns selection/scroll rendering. Only the Workbench repository changed. The UI view path was added to the task claim after a reproducible actual-grid defect demonstrated the needed shared fix.",
+      "artifacts": [
+        "docs/tasks.json",
+        "lua/workbench/providers/git.lua",
+        "lua/workbench/controllers/git.lua",
+        "lua/workbench/ui/view.lua",
+        "tests/check_ownership.py"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test",
+      "result": "All 131 mini.test cases passed on Neovim 0.11.7 and 0.12.4. Git tests cover porcelain ordinary/rename/unmerged/untracked records, spaces/newlines, real staged rename and untracked diffs, cache hits, same-root refresh coalescing, non-Git roots, linked worktrees, submodules, large-output truncation, and rejection of forged paths. Controller coverage verifies explicit diff, process-free cursor movement, missing-Git visibility, and view behavior.",
+      "artifacts": [
+        "tests/runtime/test_git_provider.lua",
+        "tests/runtime/test_git_controller.lua",
+        "tests/runtime/run.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test; inspect cancellation, coalescing, cache and consumer-disposal cases in tests/runtime/test_git_provider.lua and tests/runtime/test_git_controller.lua",
+      "result": "Two rapid refresh consumers share one identity/status process chain and receive their own generations; a subsequent cached refresh launches no process. Closing the status consumer while identity is pending kills the owned process, clears provider/controller/layout requests, and ignores a late stdout/exit callback. Closing a completed diff restores focus to Git status and closing all views leaves zero active requests/windows. No sibling action or editor-owned buffer is removed.",
+      "artifacts": [
+        "tests/runtime/test_git_provider.lua",
+        "tests/runtime/test_git_controller.lua",
+        ".test-output/e2e/wb20/20260913T035803Z-120x35-8d3dd3/result.json",
+        ".test-output/e2e/wb20/20260913T035803Z-120x35-b512a9/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb20_git.py --nvim <Neovim 0.11.7 or 0.12.4> --grid-sizes 160x50,120x35,80x24,60x20",
+      "result": "The real RPC/ext_linegrid journey passed on both Neovim versions at all four grids: open a repository's Git status, move with j, explicitly preview the selected untracked file with d, navigate into the bounded diff to see +new content, close the diff back to status, then close status back to the editor. The grid confirmed 0 processes for cursor movement and exactly 1 for the selected diff. Repository status remained unchanged; editor cwd/buffer and focus were preserved. Result/screen artifacts are retained in the listed run directories.",
+      "artifacts": [
+        "tests/e2e/wb20_git.py",
+        ".test-output/e2e/wb20/20260913T035347Z-160x50-f2474e/result.json",
+        ".test-output/e2e/wb20/20260913T035347Z-160x50-eab986/result.json",
+        ".test-output/e2e/wb20/20260913T035347Z-120x35-870182/result.json",
+        ".test-output/e2e/wb20/20260913T035347Z-120x35-c6e253/result.json",
+        ".test-output/e2e/wb20/20260913T035348Z-80x24-dcfae4/result.json",
+        ".test-output/e2e/wb20/20260913T035348Z-80x24-5b6dfa/result.json",
+        ".test-output/e2e/wb20/20260913T035348Z-60x20-76d2a6/result.json",
+        ".test-output/e2e/wb20/20260913T035348Z-60x20-0e3dda/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python bench/startup.py --runs 5 --nvim nvim; inspect WB-20 real-grid result.json timings and the fresh /tmp/wb20-startup-final-20260913.log profile",
+      "result": "Host startup marker was 45.147 ms p50 / 50.366 ms p95 across five interleaved samples, below the 150 ms budget and consistent with the previous WB-19 46.636 ms single-run marker. First RPC frame was 58.260/59.916 ms p50/p95 and first-input state 1.829/1.950 ms. No Git provider/controller/view module was loaded in the startup profile. First selected-diff latency across minimum/current Neovim and the four grids was 17.069–23.257 ms; one repository identity/status chain used 2 processes, cursor motion 0, and explicit diff 1. A single fresh marker was a 72.564 ms outlier but remained under budget; the repeated distribution showed no WB-20 startup regression.",
+      "artifacts": [
+        "docs/evidence/WB-20-startup.txt",
+        ".bench-output/startup/20260913T035503Z-baseline-4f46a1/baseline.json",
+        ".test-output/e2e/wb20/20260913T035347Z-160x50-f2474e/result.json",
+        ".test-output/e2e/wb20/20260913T035347Z-160x50-eab986/result.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test; make check-ownership test-integration; inspect missing-Git provider/controller cases",
+      "result": "Minimum/current Neovim suites and all 21 Python ownership/plan/harness integration tests passed; the plan checker accepted the task graph. Missing Git is reported as unavailable with no process spawn, and a non-Git directory is distinguished from a repository. This task adds no Autoconf mapping or host runtime/default wiring; native Workbench host integration remains in its separately gated task. Checks ran on macOS; Linux was unavailable.",
+      "artifacts": [
+        "tests/runtime/test_git_provider.lua",
+        "tests/runtime/test_git_controller.lua",
+        "tests/check_ownership.py",
+        "tests/test_plan.py",
+        "scripts/check_plan.py"
+      ]
+    }
+  ]
+}

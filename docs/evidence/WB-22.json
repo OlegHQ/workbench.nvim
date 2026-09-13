@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "task": "WB-22",
+  "revision": "Workbench HEAD 0534135d877ec3679bb91ee0b4a68b71e174ff7a plus the pre-existing dirty WB-01..WB-21 tree and tested WB-22 changes. No commit or push was made.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1; Neovim 0.11.7 minimum and 0.12.4 current/host; Python 3.14.6; mini.test 0.16.0; pynvim 0.6.0; msgpack 1.1.1; ripgrep from the local test environment. Linux was unavailable locally and is not claimed as tested.",
+  "summary": "Implemented selected-match literal, single-line workspace replacement with an immutable byte-checked plan, exact diff, explicit review/apply, revalidation and a bounded persistent preimage/recovery journal. Loaded buffers are changed in descending byte order as one per-buffer undo step and retain pre-existing dirty text; unloaded files use a verified same-directory temporary file and atomic rename while preserving CRLF and mode. Multi-file application is explicitly sequential/non-atomic and reports exact applied/unapplied resources after failure. Regex/capture and multiline replacement remain unavailable. Replacement service creation is lazy until an eligible confirmed action is invoked.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "make check-ownership; review docs/tasks.json#WB-22 and changed module ownership/disposal",
+      "result": "Ownership validation passed for all 37 Workbench Lua modules. The Search controller owns the lazily-created replacement service and cancels a pending plan when its view closes; the service owns plans, temporary file handles and journal writes; the Search UI only renders match marks. Changes are confined to Workbench service/controller/UI, tests, Makefile and WB-22 evidence/manifest paths. No root Neovim config, sibling plugin, Nix checkout or external repository was changed for WB-22.",
+      "artifacts": [
+        "docs/tasks.json",
+        "lua/workbench/services/replacement.lua",
+        "lua/workbench/controllers/search.lua",
+        "lua/workbench/ui/search.lua",
+        "tests/check_ownership.py",
+        "Makefile"
+      ]
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim",
+      "result": "All 153 mini.test cases passed on both Neovim 0.11.7 and 0.12.4. WB-22 assertions cover literal byte-range selection, UTF-8 text before matches, overlap refusal, exact diff, apply only after review, stale preimage refusal, CRLF/mode preservation, dirty-buffer snapshot edits with one undo group, cancellation/disposal, partial two-file failure and restart recovery metadata with automatic apply disabled.",
+      "artifacts": [
+        "tests/runtime/test_replacement_service.lua",
+        "tests/runtime/test_search_controller.lua",
+        "tests/runtime/run.lua"
+      ]
+    },
+    {
+      "id": "G2",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; run tests/e2e/wb22_replacement.py on both Neovim versions; inspect controller close/late-confirmation and disposal assertions",
+      "result": "Repeated cancel/dispose is idempotent. A runtime test closes Search while replacement confirmation is pending, invokes the late Apply callback and proves the plan remains cancelled, review/apply are never called, disk is unchanged, and the view count returns to zero. The RPC journey confirms owned controller/provider/layout resources are disposed and the lazily-created replacement service is released.",
+      "artifacts": [
+        "tests/runtime/test_replacement_service.lua",
+        "tests/runtime/test_search_controller.lua",
+        ".test-output/e2e/wb22/20260913T054744Z-160x50-3c40f3/result.json",
+        ".test-output/e2e/wb22/20260913T054745Z-60x20-a045e8/result.json",
+        ".test-output/e2e/wb22/20260913T054752Z-160x50-e8264c/result.json",
+        ".test-output/e2e/wb22/20260913T054753Z-60x20-a3ef2b/result.json"
+      ]
+    },
+    {
+      "id": "G3",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python tests/e2e/wb22_replacement.py --grid-sizes 160x50,120x35,80x24,60x20 --nvim <Neovim 0.11.7 or 0.12.4>",
+      "result": "UX-10 passed in actual Neovim RPC/ext_linegrid sessions on both supported binaries at all four terminal grids. The scenario uses Search keys to mark two selected matches, opens the exact diff, proves cancellation leaves bytes unchanged, explicitly confirms an apply, checks the rendered stale-preimage error and unapplied ledger, and verifies editor focus/origin and cleanup. Action availability is false before a completed literal query and true after it without eagerly constructing the service. The replacement confirmation UI is keyboard-operated; no mouse behavior is required by this flow.",
+      "artifacts": [
+        "tests/e2e/wb22_replacement.py",
+        ".test-output/e2e/wb22/20260913T054744Z-160x50-3c40f3/result.json",
+        ".test-output/e2e/wb22/20260913T054744Z-120x35-0dc32a/result.json",
+        ".test-output/e2e/wb22/20260913T054745Z-80x24-2199b7/result.json",
+        ".test-output/e2e/wb22/20260913T054745Z-60x20-a045e8/result.json",
+        ".test-output/e2e/wb22/20260913T054752Z-160x50-e8264c/result.json",
+        ".test-output/e2e/wb22/20260913T054753Z-120x35-ae3842/result.json",
+        ".test-output/e2e/wb22/20260913T054753Z-80x24-f4b30f/result.json",
+        ".test-output/e2e/wb22/20260913T054753Z-60x20-a3ef2b/result.json"
+      ]
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": ".test-deps/venv/bin/python bench/startup.py --runs 5 --nvim nvim; inspect the eight WB-22 RPC result.json files",
+      "result": "Five warm interleaved host/plugin-free samples measured host startup marker p50 46.333 ms and p95 86.974 ms (under the 150 ms target); first UI frame p50/p95 was 63.394/68.707 ms and first input state 1.951/2.094 ms. Because host integration remains gated by WB-25, this startup run does not load Workbench; the WB-22 action-registry assertions prove the new service is not created before use. Across the eight small-fixture UI runs, search completion was 81.571–91.518 ms, review 81.767–97.655 ms and apply 30.738–45.827 ms. These are end-to-end interaction samples, not a claim of a before/after Workbench-host startup comparison.",
+      "artifacts": [
+        ".bench-output/startup/20260913T055107Z-baseline-399e18/baseline.json",
+        ".test-output/e2e/wb22/20260913T054744Z-160x50-3c40f3/result.json",
+        ".test-output/e2e/wb22/20260913T054744Z-120x35-0dc32a/result.json",
+        ".test-output/e2e/wb22/20260913T054745Z-80x24-2199b7/result.json",
+        ".test-output/e2e/wb22/20260913T054745Z-60x20-a045e8/result.json",
+        ".test-output/e2e/wb22/20260913T054752Z-160x50-e8264c/result.json",
+        ".test-output/e2e/wb22/20260913T054753Z-120x35-ae3842/result.json",
+        ".test-output/e2e/wb22/20260913T054753Z-80x24-f4b30f/result.json",
+        ".test-output/e2e/wb22/20260913T054753Z-60x20-a3ef2b/result.json"
+      ]
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; make check-ownership test-integration; python3 scripts/check_plan.py",
+      "result": "Minimum/current Neovim suites passed (153 cases each), ownership boundaries passed, all 21 Python integration/plan/harness tests passed, and the plan checker accepted the graph. WB-22 introduces no Workbench host mapping, Autoconf resolver, theme mapping or Nix runtime pin, so those integration checks are not applicable to this task. Tested locally on macOS only; Linux remains explicitly unverified and is not represented as a pass.",
+      "artifacts": [
+        "Makefile",
+        "tests/check_ownership.py",
+        "tests/test_plan.py",
+        "tests/test_harness_tools.py",
+        "tests/test_runner_failure.py",
+        "scripts/check_plan.py",
+        "docs/tasks.json"
+      ]
+    },
+    {
+      "id": "G6",
+      "status": "pass",
+      "command": "make test NVIM_CURRENT=nvim; inspect WB-22 stale/dirty/partial failure cases and real-grid apply/cancel runs",
+      "result": "A reviewed plan refuses a subsequently changed file and leaves the external content intact; the UI reports zero applied and the exact file as unapplied. Dirty loaded buffers preserve user text and are grouped into one undo step without changing disk. Unloaded CRLF files retain their mode. Read-only targets, overlapping ranges and unsafe inputs fail before mutation. Injected failure on the second file yields an exact partial ledger (first applied, second unapplied); restart recovery exposes saved preimages/state and never auto-applies. No global-undo capability is advertised.",
+      "artifacts": [
+        "tests/runtime/test_replacement_service.lua",
+        "tests/runtime/test_search_controller.lua",
+        "lua/workbench/services/replacement.lua",
+        "lua/workbench/controllers/search.lua",
+        ".test-output/e2e/wb22/20260913T054744Z-160x50-3c40f3/result.json",
+        ".test-output/e2e/wb22/20260913T054752Z-160x50-e8264c/result.json"
+      ]
+    }
+  ]
+}

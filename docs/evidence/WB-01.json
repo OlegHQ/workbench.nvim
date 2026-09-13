@@ -1,0 +1,36 @@
+{
+  "task": "WB-01",
+  "revision": "Dirty workbench tree based on 0534135d877ec3679bb91ee0b4a68b71e174ff7a; host nvim-config HEAD 64dceb4df6ac4d3e9b571146101c00947c143b12.",
+  "environment": "macOS 26.4.1 arm64, Macmini9,1 (8 CPUs); Neovim minimum 0.11.7 and current host 0.12.4; Python 3.14.6, pynvim 0.6.0, msgpack 1.1.1; mini.test v0.16.0 pinned at 4c70379d07ea44f697d96c7a6f04c79f17b34bb3; fixture seed 20260912.",
+  "summary": "Implemented the local Neovim harness, deterministic fixture generator, benchmark, import-boundary guard, and failure-detecting E2E driver. WB-01 establishes validation only; it does not ship workbench runtime behavior. The host-config E2E child completed the UI probe and was reaped, but required the driver's bounded SIGTERM fallback after :qa!; its artifact records exit status 1. No cold-cache run or Linux run was performed.",
+  "gates": [
+    {
+      "id": "G0",
+      "status": "pass",
+      "command": "Review task WB-01 ownership in docs/tasks.json, changed paths, tests/e2e/driver.py cleanup paths, and run make check-ownership.",
+      "result": "All implementation changes are in workbench-owned tests/, bench/, Makefile, and associated task/evidence documentation. The harness owns and disposes its Neovim child, RPC control/UI sessions, UI thread, socket, and temporary XDG tree; process shutdown is bounded and the child is reaped, including after negative assertions. No workbench Lua modules exist yet, so the ownership guard checked 0 runtime modules; its 20 integration tests exercise allowed, forbidden, and explicitly allowlisted dynamic imports. Dependency direction and the task's workbench ownership were reviewed; no runtime dependency or hosted CI was added.",
+      "artifacts": []
+    },
+    {
+      "id": "G1",
+      "status": "pass",
+      "command": "make test-integration; make test NVIM_CURRENT=nvim; make test-ui NVIM_CURRENT=nvim; make test-e2e NVIM_CURRENT=nvim.",
+      "result": "20 Python integration/validator tests passed, including deliberate import-boundary violations and a deliberately failing mini.test child proving nonzero exit. The Neovim screen harness passed on 0.11.7 and 0.12.4. The RPC ext_linegrid probe passed on both versions at 160x50, 120x35, 80x24, and 60x20; key and mouse input, rendered output, focus return, and modified-origin preservation were observed. E2E self-tests detected deliberately wrong rendering and focus and reaped both failed children. The configured-host probe also passed those user-visible assertions and reaped its child; its local artifact records that shutdown used the bounded SIGTERM fallback and returned status 1.",
+      "artifacts": []
+    },
+    {
+      "id": "G4",
+      "status": "pass",
+      "command": "make bench NVIM_CURRENT=nvim (20 interleaved host/plugin-free startup pairs after deterministic fixture generation).",
+      "result": "Seed 20260912 generated tiny (100 files/0.2 MB), normal (10,000/20.48 MB), stress (100,000/204.8 MB), and pathological (20,000 immediate entries plus a 10 MiB line) fixtures. On the warm macOS host, configured startup marker p50/p95 was 45.421/54.632 ms, process wall time 64.255/76.544 ms, first RPC frame 62.344/79.442 ms, and first visible input 2.023/3.155 ms. Plugin-free p50/p95 was 8.930/10.375 ms, 24.854/30.782 ms, 25.837/36.978 ms, and 1.304/1.422 ms respectively. Configured startup remained below the 150 ms target. No candidate workbench runtime exists yet; first-frame/input measurements are harness-probe baselines, not a feature comparison. Samples were warm/repeated with no OS cache reset; cold cache was not measured. Host profile entries over 5 ms were existing vim.lsp (5.751 ms), themekit apply (6.555 ms), and aggregate autoconf plugin/init sourcing (39.923 ms, 11.063 ms self).",
+      "artifacts": []
+    },
+    {
+      "id": "G5",
+      "status": "pass",
+      "command": "make test; make test-ui NVIM_CURRENT=nvim; make test-e2e NVIM_CURRENT=nvim; inspect installed Nix-store plugin targets and run a host-config Neovim public-API smoke check.",
+      "result": "The harness and real RPC UI passed on minimum Neovim 0.11.7 and current host Neovim 0.12.4. Host-installed immutable Nix-store plugins were identified as mini.files 0.18.0, conform.nvim 9.1.0-unstable-2026-08-11, fzf-lua 0.0.2695-1-unstable-0.0.2695-1, and blink.cmp 1.10.2. A read-only configured-host smoke check found the public methods mini.files.setup/open, conform.setup/format, fzf-lua.setup/files/live_grep, and blink.cmp.setup/get_lsp_capabilities. Development-only dependencies are pinned and bootstrap checksum/version checks passed. Linux and a Nix build/activation were not tested on this host; the separate nixos-config checkout is absent, and WB-01 changes neither host wiring nor Nix inputs.",
+      "artifacts": []
+    }
+  ]
+}

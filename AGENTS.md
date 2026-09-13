@@ -2,7 +2,7 @@
 
 ## Scope And Entry
 
-This repository currently contains an implementation specification. Do not describe planned capabilities as shipped. Start with [docs/PLAN.md](docs/PLAN.md), run `python3 scripts/check_plan.py --next`, and use [.agents/skills/workbench-implementation/SKILL.md](.agents/skills/workbench-implementation/SKILL.md) for implementation or architectural review.
+This repository contains the Workbench runtime, its local validation harness, and the implementation plan. Always inspect the checked-out revision and publication state before describing a capability as shipped: this workspace may contain runtime changes not yet present in the published plugin SHA. Start with [docs/PLAN.md](docs/PLAN.md), run `python3 scripts/check_plan.py --next`, and use [.agents/skills/workbench-implementation/SKILL.md](.agents/skills/workbench-implementation/SKILL.md) for implementation or architectural review.
 
 The user request determines whether to plan, implement one task, or complete a milestone. A planning request does not authorize building every milestone. Gates are evidence requirements, not repeated permission requests. Routine reversible work within an authorized implementation task should continue autonomously.
 

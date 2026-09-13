@@ -1,0 +1,8 @@
+Command: nvim --headless --startuptime /tmp/wb19-startup-final-20260913.log -c 'qa!'
+Host: macOS 26.4.1 arm64, Neovim 0.12.4
+
+--- NVIM STARTED ---: 46.636 ms (host budget: <150 ms)
+require('autoconf.sys.resolvers.editor.workbench'): 0.182 ms
+
+Workbench is not enabled by the host configuration, so its implementation remains
+lazy; the explicitly registered Autoconf resolver adds less than 1 ms at startup.
